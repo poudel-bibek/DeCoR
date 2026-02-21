@@ -902,6 +902,58 @@ def _load_graph(path):
     obj = pickle.load(open(path, "rb"))
     return obj[0] if isinstance(obj, tuple) else obj
 
+def _load_pickle_with_cpu_fallback(path):
+    """
+    Load pickles that may contain torch storages serialized on CUDA.
+    Falls back to CPU mapping when CUDA is unavailable.
+    """
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except RuntimeError as e:
+            err = str(e)
+            if "Attempting to deserialize object on a CUDA device" not in err:
+                raise
+            f.seek(0)
+            original_torch_load = torch.load
+
+            def cpu_torch_load(*args, **kwargs):
+                kwargs.setdefault("map_location", torch.device("cpu"))
+                return original_torch_load(*args, **kwargs)
+
+            torch.load = cpu_torch_load
+            try:
+                return pickle.load(f)
+            finally:
+                torch.load = original_torch_load
+
+def _greedy_spatial_match(points_a, points_b, max_dist):
+    """
+    One-to-one spatial matching between two point sets using globally
+    sorted pair distances (greedy assignment).
+    """
+    if len(points_a) == 0 or len(points_b) == 0:
+        return []
+
+    pairs = []
+    for i, a in enumerate(points_a):
+        for j, b in enumerate(points_b):
+            d = float(np.hypot(a[0] - b[0], a[1] - b[1]))
+            if d <= max_dist:
+                pairs.append((d, i, j))
+    pairs.sort(key=lambda x: x[0])
+
+    used_a = set()
+    used_b = set()
+    matches = []
+    for d, i, j in pairs:
+        if i in used_a or j in used_b:
+            continue
+        used_a.add(i)
+        used_b.add(j)
+        matches.append((i, j, d))
+    return matches
+
 def _crop_graph(G_orig, lower, upper):
     pos_orig = nx.get_node_attributes(G_orig, "pos")
     if len(pos_orig) != G_orig.number_of_nodes():
@@ -1010,20 +1062,23 @@ def _draw_graph(ax, G, pos, node_size):
 
     ax.set_axis_off(); ax.set_aspect("equal")
 
-def plot_graphs_and_gmm( graph_a_path, 
-                        graph_b_path, 
+def plot_graphs_and_gmm( graph_a_path,
+                        graph_b_path,
                         gmm_path,
-                        figsize=(18, 8), 
-                        dpi=300, 
+                        figsize=(18, 8),
+                        dpi=300,
                         surf_res=200,
-                        y_scale=5.0,
-                        node_size=50, 
+                        y_scale=1.0,
+                        node_size=50,
                         y_crop=(12, 86),
-                        gmm_cmap_style='coolwarm'):
-    
+                        gmm_cmap_style='coolwarm',
+                        show_3d=True,
+                        match_distance_ratio=0.06,
+                        move_distance_ratio=0.006):
+
     G1, pos1_raw = _crop_graph(_load_graph(graph_a_path), *y_crop)
     G2, pos2_raw = _crop_graph(_load_graph(graph_b_path), *y_crop)
-    pos1, pos2   = _stretch_pos(pos1_raw, y_scale), _stretch_pos(pos2_raw, y_scale)
+    pos1, pos2 = _stretch_pos(pos1_raw, y_scale), _stretch_pos(pos2_raw, y_scale)
 
     # Remove isolated nodes before plotting
     for G, pos in [(G1, pos1), (G2, pos2)]:
@@ -1033,54 +1088,39 @@ def plot_graphs_and_gmm( graph_a_path,
             if node in pos:
                 del pos[node]
 
-    gmm = pickle.load(open(gmm_path, "rb"))[0]
+    gmm = _load_pickle_with_cpu_fallback(gmm_path)[0]
     locs = gmm.component_distribution.loc.detach().cpu().numpy()
-    
+
     # Print the original GMM means
     print("GMM component means (original):")
     for i, mean in enumerate(locs):
         print(f"Mean {i}: Location={mean[0]:.4f}, Thickness={mean[1]:.4f}")
-    
+
     # Create a copy and manually modify means to simulate mode collapse
     modified_locs = locs.copy()
-    
-    # Manually set thickness values while keeping original locations
-    
+
     # Group 1: means with locations around 0.36-0.42 (means 0, 1, 5)
-    # Original values:
-    # Mean 0: Location=0.4072, Thickness=0.0528
-    # Mean 1: Location=0.3622, Thickness=0.5207
-    # Mean 5: Location=0.4241, Thickness=0.8140
-    
-    # Set all thicknesses in group 1 to be similar
-    modified_locs[0][1] = 0.38  # Mean 0 thickness
-    modified_locs[1][1] = 0.36  # Mean 1 thickness
-    modified_locs[5][1] = 0.32  # Mean 5 thickness
-    
+    modified_locs[0][1] = 0.38
+    modified_locs[1][1] = 0.36
+    modified_locs[5][1] = 0.32
+
     # Group 2: means with locations around 0.73-0.77 (means 2, 4)
-    # Original values:
-    # Mean 2: Location=0.7377, Thickness=0.5972
-    # Mean 4: Location=0.7792, Thickness=0.0183
-    
-    # Set all thicknesses in group 2 to be similar
-    modified_locs[2][1] = 0.32  # Mean 2 thickness
-    modified_locs[4][1] = 0.30  # Mean 4 thickness
-    
-    # Means 3 and 6 remain unchanged
-    
+    modified_locs[2][1] = 0.32
+    modified_locs[4][1] = 0.30
+
     # Update the means in the model
     device = gmm.component_distribution.loc.device
     gmm.component_distribution.loc = torch.tensor(modified_locs, dtype=torch.float32, device=device)
-    
+
     # Print modified means
     print("\nGMM component means (manually modified):")
     for i, mean in enumerate(modified_locs):
         print(f"Mean {i}: Location={mean[0]:.4f}, Thickness={mean[1]:.4f}")
-    
+
     # Use full domain with negative offset for ymin to avoid apparent truncation
     xmin, xmax = 0.0, 1.05
     ymin, ymax = -0.02, 1.05
-    
+
     X = np.linspace(xmin, xmax, surf_res)
     Y = np.linspace(ymin, ymax, surf_res)
     Xg, Yg = np.meshgrid(X, Y)
@@ -1090,166 +1130,212 @@ def plot_graphs_and_gmm( graph_a_path,
     with torch.no_grad():
         dens = torch.exp(gmm.log_prob(grid_pts)).cpu().numpy().reshape(surf_res, surf_res)
     dens_norm = (dens - dens.min()) / dens.ptp()
-    
-    fig = plt.figure(figsize=figsize, dpi=dpi)
 
-    # Simple 1x3 GridSpec
-    gs  = fig.add_gridspec(1, 3,
-                           width_ratios=[2.5, 2.5, 3],
-                           wspace=0.1) # Increased wspace
-
-    # Assign axes
-    ax1 = fig.add_subplot(gs[0,0])
-    ax2 = fig.add_subplot(gs[0,1])
-    ax3 = fig.add_subplot(gs[0,2], projection="3d")
-
-    fs = 18
-
-    # Common styling for GMM subplot's ticks, labels, and fonts, based on 'coolwarm'
-    ax3.set_xlabel('Location', fontsize=fs-2, labelpad=10, color='#202124')
-    ax3.set_zlabel('Norm. Density', fontsize=fs-2, labelpad=10, color='#202124')
-
-    z_lim_unified = (0, 0.8)
-    ax3.set_zlim(*z_lim_unified)
-    z_ticks_unified = np.arange(0, z_lim_unified[1] + 0.01, 0.2) # Includes 0.8
-    ax3.set_zticks(z_ticks_unified)
-    ax3.set_zticklabels([f"{t:.1f}" for t in z_ticks_unified])
-
-    ax3.tick_params(axis='both', which='major', labelsize=fs-2, colors='#5f6368')
-    
-    common_norm = mpl.colors.Normalize(vmin=z_lim_unified[0], vmax=z_lim_unified[1])
-
-    _draw_graph(ax1, G1, pos1, node_size)
-    _draw_graph(ax2, G2, pos2, node_size)
-    
-    # Define blue colors for "_mid" nodes and their incident edges
-    lighter_blue_color = "#FFA07A"  # Light salmon for nodes
-    darker_blue_color = "#FF4500"   # Orange red for edges and node outlines
-
-    for G, pos, ax in [(G1, pos1, ax1), (G2, pos2, ax2)]:
-        mid_nodes = [n for n in G.nodes() if "_mid" in str(n)]
-        if mid_nodes:
-            # Draw edges incident to these nodes in darker blue
-            mid_edges = [e for e in G.edges() if e[0] in mid_nodes or e[1] in mid_nodes]
-            if mid_edges:
-                nx.draw_networkx_edges(G, pos, ax=ax,
-                                       edgelist=mid_edges,
-                                       edge_color=darker_blue_color,
-                                       width=1.0) # Thicker orange edges
-            # Draw nodes on top in lighter blue with darker blue outlines
-            nx.draw_networkx_nodes(G, pos, ax=ax,
-                                   nodelist=mid_nodes,
-                                   node_size=node_size,
-                                   node_color=lighter_blue_color,
-                                   edgecolors=darker_blue_color,
-                                   linewidths=0.5)
-    
-    # Choose colormap based on gmm_cmap_style
-    if gmm_cmap_style == 'viridis':
-        cmap = plt.get_cmap("viridis", 20)  # Changed from 256 to 20 for discrete colormap
-        ax3.plot_surface(Xg, Yg, dens_norm,
-                         rstride=2, cstride=2,       
-                         cmap=cmap,                  
-                         linewidth=0,                
-                         alpha=0.9,                  
-                         antialiased=False)          
-
-        ax3.set_ylabel('Thickness', fontsize=fs-2, labelpad=12, color='#202124') # Coolwarm font style, Viridis text
-        ax3.set_title('GMM Distribution', fontweight='bold', fontsize=fs) # Added title
-
-        ax3.grid(True) # Simpler grid for viridis style
-        norm = common_norm # Use common norm
-
-    elif gmm_cmap_style == 'coolwarm':
-        cmap = plt.get_cmap("coolwarm", 20)  # Changed from 256 to 20 for discrete colormap
-        ax3.plot_surface(Xg, Yg, dens_norm,
-                         rstride=2, 
-                         cstride=2,
-                         facecolors=cmap(dens_norm), # Original method for coolwarm
-                         linewidth=0.05,
-                         edgecolor='white',
-                         alpha=0.9,
-                         antialiased=True, 
-                         shade=False)                 # Original shade=False
-
-        ax3.set_ylabel("Width", fontsize=fs-2, labelpad=12, color='#202124') # Original label and coolwarm font style
-        # No title for coolwarm style
-        
-        # Custom grid for coolwarm style
-        ax3.grid(True)
-        grid_style = dict(color=(0.0, 0.0, 0.0, 0.2), linestyle=(0, (5, 5)), linewidth=0.5)
-        for axis_obj in [ax3.xaxis, ax3.yaxis, ax3.zaxis]:
-            axis_obj._axinfo["grid"].update(grid_style)
-        
-        norm = common_norm # Use common norm
+    if show_3d:
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        gs = fig.add_gridspec(1, 3, width_ratios=[4.0, 2.2, 2.4], wspace=0.14)
+        ax_net = fig.add_subplot(gs[0, 0])
+        ax3 = fig.add_subplot(gs[0, 1], projection="3d")
+        ax2d = fig.add_subplot(gs[0, 2])
     else:
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        gs = fig.add_gridspec(1, 2, width_ratios=[4.0, 2.9], wspace=0.12)
+        ax_net = fig.add_subplot(gs[0, 0])
+        ax3 = None
+        ax2d = fig.add_subplot(gs[0, 1])
+
+    fs = 13 if show_3d else 15
+
+    # Compute shared limits for graph panels so movements are directly comparable.
+    all_xy = list(pos1.values()) + list(pos2.values())
+    if all_xy:
+        xs = [xy[0] for xy in all_xy]
+        ys = [xy[1] for xy in all_xy]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        x_pad = max((x_max - x_min) * 0.02, 1e-3)
+        y_pad = max((y_max - y_min) * 0.06, 1e-3)
+        graph_xlim = (x_min - x_pad, x_max + x_pad)
+        graph_ylim = (y_min - y_pad, y_max + y_pad)
+    else:
+        graph_xlim = (0, 1)
+        graph_ylim = (0, 1)
+
+    # ------------------------------
+    # (a) Single network-delta view:
+    #     spatially matched crosswalks + moved/added/removed only.
+    # ------------------------------
+    nx.draw_networkx_edges(G2, pos2, ax=ax_net, edge_color="#d1d5db", width=0.65, alpha=0.72)
+    nx.draw_networkx_nodes(G2, pos2, ax=ax_net, node_size=node_size * 0.45,
+                           node_color="#f3f4f6", edgecolors="#d1d5db", linewidths=0.25)
+
+    mid_nodes_1 = [n for n in G1.nodes() if "_mid" in str(n) and n in pos1]
+    mid_nodes_2 = [n for n in G2.nodes() if "_mid" in str(n) and n in pos2]
+    pts_1 = np.array([pos1[n] for n in mid_nodes_1], dtype=float) if mid_nodes_1 else np.empty((0, 2), dtype=float)
+    pts_2 = np.array([pos2[n] for n in mid_nodes_2], dtype=float) if mid_nodes_2 else np.empty((0, 2), dtype=float)
+
+    diag = np.hypot(graph_xlim[1] - graph_xlim[0], graph_ylim[1] - graph_ylim[0])
+    match_threshold = max(diag * match_distance_ratio, 1e-6)
+    move_threshold = max(diag * move_distance_ratio, 1e-6)
+
+    matches = _greedy_spatial_match(pts_1, pts_2, match_threshold)
+    matched_1 = {i for i, _, _ in matches}
+    matched_2 = {j for _, j, _ in matches}
+    removed_idx = sorted(set(range(len(pts_1))) - matched_1)
+    added_idx = sorted(set(range(len(pts_2))) - matched_2)
+    moved_matches = [(i, j, d) for i, j, d in matches if d > move_threshold]
+    stationary_count = len(matches) - len(moved_matches)
+
+    moved_dists = [d for _, _, d in moved_matches]
+    avg_move = float(np.mean(moved_dists)) if moved_dists else 0.0
+
+    change_points = []
+    for i, j, _ in moved_matches:
+        start_xy = pts_1[i]
+        end_xy = pts_2[j]
+        change_points.append(start_xy)
+        change_points.append(end_xy)
+        ax_net.annotate("",
+                        xy=end_xy,
+                        xytext=start_xy,
+                        arrowprops=dict(arrowstyle="-|>", color="#f59e0b",
+                                        lw=1.2, alpha=0.95, mutation_scale=11),
+                        zorder=10)
+
+    if moved_matches:
+        start_pts = np.array([pts_1[i] for i, _, _ in moved_matches], dtype=float)
+        end_pts = np.array([pts_2[j] for _, j, _ in moved_matches], dtype=float)
+        ax_net.scatter(start_pts[:, 0], start_pts[:, 1],
+                       s=node_size * 1.45, marker='o',
+                       facecolors='none', edgecolors="#2563eb", linewidths=1.25,
+                       zorder=11)
+        ax_net.scatter(end_pts[:, 0], end_pts[:, 1],
+                       s=node_size * 1.35, marker='o',
+                       c="#f97316", edgecolors="white", linewidths=0.55,
+                       zorder=12)
+
+    if added_idx:
+        added_pts = np.array([pts_2[j] for j in added_idx], dtype=float)
+        change_points.extend(list(added_pts))
+        ax_net.scatter(added_pts[:, 0], added_pts[:, 1],
+                       s=node_size * 1.65, marker='^',
+                       c="#16a34a", edgecolors="white", linewidths=0.65,
+                       zorder=13)
+
+    if removed_idx:
+        removed_pts = np.array([pts_1[i] for i in removed_idx], dtype=float)
+        change_points.extend(list(removed_pts))
+        ax_net.scatter(removed_pts[:, 0], removed_pts[:, 1],
+                       s=node_size * 1.45, marker='x',
+                       c="#dc2626", linewidths=1.25,
+                       zorder=13)
+
+    # Auto-zoom around changed elements when available.
+    if len(change_points) > 0:
+        cp = np.array(change_points, dtype=float)
+        cx0, cx1 = cp[:, 0].min(), cp[:, 0].max()
+        cy0, cy1 = cp[:, 1].min(), cp[:, 1].max()
+        pad_x = max((cx1 - cx0) * 0.25, diag * 0.05)
+        pad_y = max((cy1 - cy0) * 0.25, diag * 0.05)
+        zoom_xlim = (max(graph_xlim[0], cx0 - pad_x), min(graph_xlim[1], cx1 + pad_x))
+        zoom_ylim = (max(graph_ylim[0], cy0 - pad_y), min(graph_ylim[1], cy1 + pad_y))
+    else:
+        zoom_xlim, zoom_ylim = graph_xlim, graph_ylim
+
+    if (zoom_xlim[1] - zoom_xlim[0]) < 1e-6 or (zoom_ylim[1] - zoom_ylim[0]) < 1e-6:
+        zoom_xlim, zoom_ylim = graph_xlim, graph_ylim
+
+    delta_legend_handles = [
+        mlines.Line2D([], [], color="#2563eb", marker='o', markersize=6.8,
+                      markerfacecolor='none', linewidth=0, label='Original Layout'),
+        mlines.Line2D([], [], color="#f97316", marker='o', markersize=6.8,
+                      linewidth=0, label='New Layout'),
+    ]
+    ax_net.legend(handles=delta_legend_handles, loc='upper center',
+                  bbox_to_anchor=(0.5, -0.14), fontsize=fs - 4, ncol=2,
+                  frameon=True, framealpha=0.95, facecolor='white', edgecolor='#d1d5db')
+
+    ax_net.set_xlim(*zoom_xlim)
+    ax_net.set_ylim(*zoom_ylim)
+    ax_net.set_axis_off()
+    ax_net.set_aspect("equal")
+    ax_net.set_title("Pedestrian Network", fontsize=fs, pad=10)
+
+    # ------------------------------
+    # GMM plots: 2D is always shown; 3D is optional.
+    # ------------------------------
+    if gmm_cmap_style not in ("coolwarm", "viridis"):
         raise ValueError(f"Unsupported gmm_cmap_style: {gmm_cmap_style}. Choose 'viridis' or 'coolwarm'.")
+    cmap = plt.get_cmap(gmm_cmap_style, 24)
 
-    ax3.set_xlim(xmin, xmax)
-    ax3.set_ylim(ymin, ymax)
-    
-    ax3.view_init(elev=35, azim=-50) # Changed view angle
-    
-    # Drawing colorbar relative to ax3 with controlled height and increased padding
-    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax3, shrink=0.35, pad=0.15, label='')  # Increased pad from 0.10 to 0.15
-    cbar.ax.tick_params(labelsize=fs-2, colors='#5f6368')  # Match other tick font sizes and use gray color
-    
-    # --- Precise Label Positioning ---
-    # Ensure figure is drawn to get accurate bounding boxes
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
+    contour = ax2d.contourf(Xg, Yg, dens_norm, levels=24, cmap=cmap)
+    ax2d.contour(Xg, Yg, dens_norm, levels=8, colors='white', linewidths=0.35, alpha=0.55)
+    ax2d.set_xlim(xmin, xmax)
+    ax2d.set_ylim(ymin, ymax)
+    ax2d.set_xlabel("Location", fontsize=fs + 1, fontweight='bold')
+    ax2d.set_ylabel("Width", fontsize=fs + 1, fontweight='bold')
+    ax2d.set_title("GMM Top Down", fontsize=fs + 1, fontweight='bold', pad=8)
+    ax2d.tick_params(axis='both', which='major', labelsize=fs - 1)
+    ax2d.set_aspect('equal', adjustable='box')
 
-    # Get precise bounding boxes in display coordinates
-    bb1_disp = ax1.get_tightbbox(renderer)
-    bb2_disp = ax2.get_tightbbox(renderer)
-    bb3_disp = ax3.get_tightbbox(renderer)
-    bbcbar_disp = cbar.ax.get_window_extent(renderer) # Use get_window_extent for colorbar
+    means = gmm.component_distribution.loc.detach().cpu().numpy()
+    ax2d.scatter(means[:, 0], means[:, 1],
+                 s=38, c="#1d4ed8", edgecolors="#0b2d6b", linewidths=0.6,
+                 zorder=5, label="Component Means")
+    ax2d.legend(loc='upper center', bbox_to_anchor=(0.5, -0.14),
+                fontsize=fs - 3, frameon=True, framealpha=0.95,
+                facecolor='white', edgecolor='#d1d5db')
 
-    # Transform to figure coordinates
-    bb1_fig = bb1_disp.transformed(fig.transFigure.inverted())
-    bb2_fig = bb2_disp.transformed(fig.transFigure.inverted())
-    bb3_fig = bb3_disp.transformed(fig.transFigure.inverted())
-    bbcbar_fig = bbcbar_disp.transformed(fig.transFigure.inverted())
+    cbar = fig.colorbar(contour, ax=ax2d, fraction=0.046, pad=0.04)
+    cbar.set_label("Norm. Density", fontsize=fs, fontweight='bold')
+    cbar.ax.tick_params(labelsize=fs - 1)
 
-    # Calculate centers precisely
-    x1 = bb1_fig.x0 / 2 + 0.06
-    x2 = bb2_fig.x0 + bb2_fig.width / 2 - 0.01
-    x3 = bb3_fig.x0 + (bbcbar_fig.x1 - bb3_fig.x0) / 2 + 0.04 # Center + slight right shift
+    if ax3 is not None:
+        ax3.set_xlabel('Location', fontsize=fs - 2, labelpad=1, color='#202124')
+        ax3.set_ylabel("Width", fontsize=fs - 2, labelpad=1, color='#202124')
+        ax3.set_zlabel('Density', fontsize=fs - 2, labelpad=1, color='#202124')
 
-    # Common y position for labels (relative to bottom of figure)
-    label_y = 0.17 # Kept user's adjustment
+        z_lim_unified = (0, 0.8)
+        ax3.set_zlim(*z_lim_unified)
+        z_ticks_unified = np.arange(0, z_lim_unified[1] + 0.01, 0.4)
+        ax3.set_zticks(z_ticks_unified)
+        ax3.set_zticklabels([f"{t:.1f}" for t in z_ticks_unified])
+        ax3.tick_params(axis='both', which='major', pad=0, labelsize=fs - 3, colors='#5f6368')
 
-    fig.text(x1, label_y, "(a)", ha="center", va="bottom", fontsize=fs, fontweight="bold")
-    fig.text(x2, label_y, "(b)", ha="center", va="bottom", fontsize=fs, fontweight="bold")
-    fig.text(x3, label_y, "(c)", ha="center", va="bottom", fontsize=fs, fontweight="bold")
+        if gmm_cmap_style == 'viridis':
+            ax3.plot_surface(Xg, Yg, dens_norm,
+                             rstride=2, cstride=2, cmap=cmap,
+                             linewidth=0, alpha=0.9, antialiased=False)
+            ax3.grid(True)
+        else:
+            ax3.plot_surface(Xg, Yg, dens_norm,
+                             rstride=2, cstride=2, facecolors=cmap(dens_norm),
+                             linewidth=0.05, edgecolor='white',
+                             alpha=0.9, antialiased=True, shade=False)
+            ax3.grid(True)
+            grid_style = dict(color=(0.0, 0.0, 0.0, 0.2), linestyle=(0, (5, 5)), linewidth=0.5)
+            for axis_obj in [ax3.xaxis, ax3.yaxis, ax3.zaxis]:
+                axis_obj._axinfo["grid"].update(grid_style)
 
-    ax1.text(0.54, -0.25, "Original Network",
-             horizontalalignment='center', 
-             verticalalignment='bottom',
-             transform=ax1.transAxes,
-             fontsize=fs)
-    
-    ax2.text(0.63, -0.35, "Final Network", 
-             horizontalalignment='center', 
-             verticalalignment='bottom',
-             transform=ax2.transAxes,
-             fontsize=fs)
+        ax3.set_xlim(xmin, xmax)
+        ax3.set_ylim(ymin, ymax)
+        ax3.view_init(elev=35, azim=-50)
+        ax3.set_box_aspect((1.05, 1.0, 0.7))
+        ax3.set_title("GMM Distribution", fontsize=fs - 1, fontweight='bold', pad=6)
 
-    # Adjust subplot layout manually - increase wspace
-    plt.subplots_adjust(left=-0.04, right=0.98, top=0.98, bottom=0.1, wspace=0.1)
+    # Panel tags
+    ax_net.text(0.01, 0.99, "(a)", transform=ax_net.transAxes,
+                ha="left", va="top", fontsize=fs, fontweight="bold")
+    if ax3 is not None:
+        ax3.text2D(0.01, 0.99, "(b)", transform=ax3.transAxes,
+                   ha="left", va="top", fontsize=fs, fontweight="bold")
+        ax2d.text(0.01, 0.99, "(c)", transform=ax2d.transAxes,
+                  ha="left", va="top", fontsize=fs, fontweight="bold")
+    else:
+        ax2d.text(0.01, 0.99, "(b)", transform=ax2d.transAxes,
+                  ha="left", va="top", fontsize=fs, fontweight="bold")
 
-    # --- Manual Shift Upwards for Subplot (c) --- (Moved After subplots_adjust)
-    dy = 0.01 # Vertical shift amount
-    # Get original positions again (might be slightly different after draw)
-    b3_final = ax3.get_position()
-    bcbar_final = cbar.ax.get_position()
-    # Apply shift
-    ax3.set_position([b3_final.x0, b3_final.y0 + dy, b3_final.width, b3_final.height])
-    cbar.ax.set_position([bcbar_final.x0, bcbar_final.y0 + dy, bcbar_final.width, bcbar_final.height])
-
-    # Save figure tightly
+    plt.subplots_adjust(left=0.03, right=0.99, top=0.93, bottom=0.22, wspace=0.14)
     fig.savefig('./graphs_gmm.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
 
 def rewards_results_plot(combined_csv_codesign, 
@@ -1863,496 +1949,6 @@ def plot_demand(
     plt.savefig("./demand.png", dpi=300, bbox_inches="tight", pad_inches=0.1)
     plt.close()
 
-def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
-                                     control_tl_path, control_ppo_path,
-                                     in_range_demand_scales, use_error_bars=True):
-    """
-    Combines the design and control results into a single figure with three columns,
-    using specific colors and split legends. The figure shows:
-    Left (a): Pedestrian Arrival Time results.
-    Middle (b): Pedestrian Wait Time results.
-    Right (c): Vehicle Wait Time results.
-    """
-
-    fs = 23 # Updated font size
-    n_yticks = 5 # Define the number of y-ticks for all subplots
-
-    # Define Colors - Modern, sophisticated palette
-    COLOR_INDIAN_RED = '#E63946'     # For Real-world (Modern vibrant red)
-    COLOR_SPRING_GREEN = '#2D9334'   # For Design Agent (Ours) (Modern green)
-    COLOR_DARK_ORCHID = '#7C3AED'    # For Signalized (Modern purple)
-    COLOR_SLATE_GRAY = '#DC2626'     # For Unsignalized (Modern red-orange)
-    COLOR_ROYAL_BLUE = '#1D4ED8'     # For Control Agent (Ours) (Modern blue)
-
-
-    # Map plot elements to Colors - Updated based on new scheme
-    COLORS = {
-        'Design Agent (Ours)': '#2D9334',            # Design plot: Same green as control
-        'Real-world':          COLOR_INDIAN_RED,     # Design plot: Indian Red
-        'Signalized':          '#1f77b4',            # Control plots: Matplotlib Blue
-        'Unsignalized':        '#ff7f0e',            # Control plots: Matplotlib Orange
-        'Control Agent (Ours)': '#2D9334',          # Control plots: Same green
-    }
-    
-    # Helper function to get gradient color at position
-    def get_gradient_color(base_color, position, total_positions):
-        """Get gradient color at specific position"""
-        r = int(base_color[1:3], 16) / 255.0
-        g = int(base_color[3:5], 16) / 255.0
-        b = int(base_color[5:7], 16) / 255.0
-        
-        # Interpolate to lighter color
-        r2 = min(1.0, r + 0.08)
-        g2 = min(1.0, g + 0.08)
-        b2 = min(1.0, b + 0.08)
-        
-        # Linear interpolation based on position
-        t = position / max(1, total_positions - 1)
-        r_interp = r + t * (r2 - r)
-        g_interp = g + t * (g2 - g)
-        b_interp = b + t * (b2 - b)
-        
-        return f"#{int(r_interp*255):02x}{int(g_interp*255):02x}{int(b_interp*255):02x}"
-
-    # Helper function to create a gradient line with matching colors
-    def create_gradient_line(ax, x, y, base_color, lw=2.5, zorder=3, label=None, marker='o'):
-        # Create points
-        points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        # Convert hex to RGB
-        r = int(base_color[1:3], 16) / 255.0
-        g = int(base_color[3:5], 16) / 255.0
-        b = int(base_color[5:7], 16) / 255.0
-        
-        # Create lighter variant (for gradient end) - subtle gradient for consistency
-        r2 = min(1.0, r + 0.08)  # Subtle lightening to maintain color consistency
-        g2 = min(1.0, g + 0.08)  # Subtle lightening to maintain color consistency  
-        b2 = min(1.0, b + 0.08)  # Subtle lightening to maintain color consistency
-        
-        # Create custom colormap with more segments for smoother gradient
-        cmap = LinearSegmentedColormap.from_list(
-            "custom_gradient", 
-            [(r, g, b), (r2, g2, b2)],
-            N=256
-        )
-        
-        # Create a gradient effect along the line
-        norm = plt.Normalize(0, len(x)-1)
-        lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=lw, zorder=zorder)
-        lc.set_array(np.arange(len(x)))
-        
-        line = ax.add_collection(lc)
-        
-        # Add markers separately with gradient colors to match line
-        marker_size = 140 if marker == '*' else 60  # Much larger markers for both
-        border_width = 0.8 if marker == '*' else 1.0  # Thinner borders for stars
-        
-        # Add markers with gradient colors
-        for i, (xi, yi) in enumerate(zip(x, y)):
-            gradient_color = get_gradient_color(base_color, i, len(x))
-            ax.scatter(xi, yi, color=gradient_color, s=marker_size, marker=marker, 
-                      edgecolor='white', linewidth=border_width, zorder=zorder+1)
-        
-        # Create a dummy line with the right color for the legend
-        if label is not None:
-            marker_legend_size = 16 if marker == '*' else 10  # Much larger legend markers
-            legend_border_width = 0.8 if marker == '*' else 1.0  # Match scatter border
-            dummy_line, = ax.plot([], [], color=base_color, lw=lw, marker=marker, 
-                                 markersize=marker_legend_size, markeredgecolor='white', markeredgewidth=legend_border_width,
-                                 label=label)
-            return dummy_line
-        return line
-
-    # Enhanced styling setup for a more professional look
-    mpl.rcParams.update({
-        'font.family':        'sans-serif',
-        'font.sans-serif':    ['Inter', 'SF Pro Display', 'Segoe UI', 'Arial', 'DejaVu Sans'],
-        'text.color':         '#1f2937',
-        'axes.edgecolor':     '#d1d5db',     
-        'axes.linewidth':     0.8,           
-        'axes.titlesize':     fs + 1,        # Slightly smaller, cleaner titles
-        'axes.titleweight':   '600',         # Modern medium-bold weight
-        'axes.labelsize':     fs - 1,        # Slightly smaller labels
-        'axes.labelweight':   '500',         # Modern medium weight
-        'xtick.color':        '#6b7280',     # Modern neutral gray
-        'ytick.color':        '#6b7280',     # Modern neutral gray
-        'xtick.labelsize':    fs - 2,        # Smaller tick labels
-        'ytick.labelsize':    fs - 2,        # Smaller tick labels
-        'xtick.major.width':  0.8,           
-        'ytick.major.width':  0.8,           
-        'grid.color':         '#f9fafb',     
-        'grid.linewidth':     0.6,
-        'grid.linestyle':     '-',
-        'grid.alpha':         1.0,           
-        'legend.frameon':     True,          
-        'legend.framealpha':  0.98,          # More opaque
-        'legend.edgecolor':   '#e5e7eb',     # Softer border
-        'legend.fontsize':    fs - 3,        # Smaller legend text
-        'figure.facecolor':   '#ffffff',
-        'axes.facecolor':     '#ffffff',
-        'legend.facecolor':   '#ffffff', 
-        'axes.titlepad':      20,            # Extra space below titles
-        'axes.spines.top':    False,         
-        'axes.spines.right':  False          
-    })
-
-    # Create figure and grid (2 rows, 3 columns) - Height remains the same as previous
-    fig = plt.figure(figsize=(24, 10))
-    # Adjusted spacing
-    gs  = GridSpec(2, 3, figure=fig, hspace=0.10, wspace=0.20)
-
-    # Create axes
-    ax_design_avg = fig.add_subplot(gs[0, 0])
-    ax_design_tot = fig.add_subplot(gs[1, 0], sharex=ax_design_avg)
-    ax_control_ped_avg = fig.add_subplot(gs[0, 1])
-    ax_control_ped_tot = fig.add_subplot(gs[1, 1], sharex=ax_control_ped_avg)
-    ax_control_veh_avg = fig.add_subplot(gs[0, 2])
-    ax_control_veh_tot = fig.add_subplot(gs[1, 2], sharex=ax_control_veh_avg)
-
-    design_panels = [ax_design_avg, ax_design_tot]
-    control_ped_panels = [ax_control_ped_avg, ax_control_ped_tot]
-    control_veh_panels = [ax_control_veh_avg, ax_control_veh_tot]
-    all_panels = design_panels + control_ped_panels + control_veh_panels
-    top_panels = [ax_design_avg, ax_control_ped_avg, ax_control_veh_avg]
-    bottom_panels = [ax_design_tot, ax_control_ped_tot, ax_control_veh_tot]
-
-    # Combine paths for determining overall scale range
-    all_json_paths = [design_unsig_path, realworld_unsig_path, control_tl_path, control_ppo_path]
-    all_scales = []
-    data_cache = {} # Cache loaded data
-
-    for path in all_json_paths:
-        if path not in data_cache:
-            # Load data using get_averages
-            data_false = get_averages(path, total=False)
-            data_true = get_averages(path, total=True)
-            data_cache[path] = {'total_false': data_false, 'total_true': data_true}
-            all_scales.extend(data_false[0]) # Add scales from this path
-        else:
-             # If already cached, just add scales
-             all_scales.extend(data_cache[path]['total_false'][0])
-
-
-    unique_scales = np.sort(np.unique(np.array(all_scales)))
-    x_min, x_max = unique_scales.min(), unique_scales.max()
-    x_margin = 0.05 * (x_max - x_min)
-    valid_min_scale = min(in_range_demand_scales)
-    valid_max_scale = max(in_range_demand_scales)
-
-    # --- Setup common axis properties ---
-    for ax in all_panels:
-        ax.set_xlim(x_min - x_margin, x_max + x_margin)
-        # Shade out-of-range areas with softer shading
-        xlim = ax.get_xlim()
-        ax.axvspan(xlim[0], valid_min_scale, facecolor='#e2e8f0', alpha=0.6, zorder=-100)
-        ax.axvspan(valid_max_scale, xlim[1], facecolor='#e2e8f0', alpha=0.6, zorder=-100)
-        
-        # Turn off default grid
-        ax.grid(False)
-        
-        # Set background to pure white
-        ax.set_facecolor('white')
-        
-        # Y-axis formatting - Use n_yticks and ensure integers
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=n_yticks, integer=True))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x)}"))
-        
-        # Set x ticks
-        ax.set_xticks(unique_scales, minor=True)
-        
-        # Ensure bottom and left spines are visible
-        # ax.spines['bottom'].set_visible(True)
-        # ax.spines['left'].set_visible(True)
-        # ax.spines['bottom'].set_color('#6b7280')
-        # ax.spines['left'].set_color('#6b7280')
-        # ax.spines['bottom'].set_linewidth(0.8)
-        # ax.spines['left'].set_linewidth(0.8)
-
-    # --- Plot Design Results (Left Column - Panel a) ---
-    ax_design_avg.set_title('Pedestrian Arrival Time')
-    design_paths = [realworld_unsig_path, design_unsig_path] # Original order kept from previous edits
-    design_labels = ['Real-world', 'Design Agent (Ours)'] # Original order kept from previous edits
-    design_legend_handles = []
-
-    for path, label in zip(design_paths, design_labels):
-        # Ensure label exists in COLORS, otherwise handle potential KeyError
-        if label not in COLORS:
-             print(f"Warning: Label '{label}' not found in COLORS dictionary. Skipping color assignment.")
-             color = 'black' # Default color or handle error appropriately
-        else:
-             color = COLORS[label] # Uses new COLORS dict
-
-        # Use cached data
-        scales, _, _, avg_vals, _, _, avg_std = data_cache[path]['total_false']
-        _, _, _, tot_vals, _, _, tot_std = data_cache[path]['total_true']
-
-        # Average Plot - Enhanced line styles with gradient - higher z-order
-        marker = '*' if 'Ours' in label else 'o'
-        h = create_gradient_line(ax_design_avg, scales, avg_vals, color, lw=2.0, zorder=20, label=label, marker=marker)
-        design_legend_handles.append(h) # Store handle for legend
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, avg_val, std_val) in enumerate(zip(scales, avg_vals, avg_std)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_design_avg.errorbar(scale, avg_val, yerr=std_val, color=gradient_color, capsize=4.5, 
-                                      elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_design_avg.fill_between(scales, avg_vals - avg_std, avg_vals + avg_std, 
-                                     color=color, alpha=0.2, zorder=5)
-
-        # Total Plot - Enhanced line styles with gradient - higher z-order
-        tot_k = tot_vals / 1000.0
-        tot_k_std = tot_std / 1000.0
-        create_gradient_line(ax_design_tot, scales, tot_k, color, lw=2.0, zorder=20, marker=marker)
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, tot_val, std_val) in enumerate(zip(scales, tot_k, tot_k_std)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_design_tot.errorbar(scale, tot_val, yerr=std_val, color=gradient_color, capsize=4.5, 
-                                      elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_design_tot.fill_between(scales, tot_k - tot_k_std, tot_k + tot_k_std, 
-                                     color=color, alpha=0.2, zorder=5)
-
-    # Specific Y limits for design average plot
-    ax_design_avg.set_ylim(bottom=50, top=120)
-    ax_design_tot.set_ylim(bottom=-0.5)
-
-    # --- Plot Control Results (Middle and Right Columns - Panels b, c) ---
-    ax_control_ped_avg.set_title('Pedestrian Wait Time')
-    ax_control_veh_avg.set_title('Vehicle Wait Time')
-
-    # Note: 'Unsignalized' uses the *design_unsig_path* data for comparison consistency
-    control_paths = [control_tl_path, design_unsig_path, control_ppo_path]
-    control_labels = ['Signalized', 'Unsignalized', 'Control Agent (Ours)'] # Original labels kept
-    control_legend_handles = []
-    max_veh_tot_val = -np.inf # Keep track of max value for veh_tot plot
-
-    for path, label in zip(control_paths, control_labels):
-         # Ensure label exists in COLORS
-        if label not in COLORS:
-             print(f"Warning: Label '{label}' not found in COLORS dictionary. Skipping color assignment.")
-             color = 'black'
-        else:
-             color = COLORS[label] # Uses new COLORS dict
-
-        # Use cached data
-        scales, veh_avg_mean, ped_avg_mean, _, veh_avg_std, ped_avg_std, _ = data_cache[path]['total_false']
-        _, veh_tot, ped_tot, _, veh_tot_std, ped_tot_std, _ = data_cache[path]['total_true']
-
-        # Pedestrian Average Wait (Middle Top) - Enhanced line styles with gradient - higher z-order
-        marker = '*' if 'Ours' in label else 'o'
-        h_ped = create_gradient_line(ax_control_ped_avg, scales, ped_avg_mean, color, lw=2.0, zorder=20, label=label, marker=marker)
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, ped_val, std_val) in enumerate(zip(scales, ped_avg_mean, ped_avg_std)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_control_ped_avg.errorbar(scale, ped_val, yerr=std_val, color=gradient_color, 
-                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_control_ped_avg.fill_between(scales,
-                                         ped_avg_mean - ped_avg_std,
-                                         ped_avg_mean + ped_avg_std,
-                                         color=color, alpha=0.2, zorder=5)
-        
-        # Store unique handles for legend
-        if label not in [h.get_label() for h in control_legend_handles]:
-             control_legend_handles.append(h_ped)
-
-        # Pedestrian Total Wait (Middle Bottom) - Enhanced line styles with gradient - higher z-order
-        create_gradient_line(ax_control_ped_tot, scales, ped_tot/1000, color, lw=2.0, zorder=20, marker=marker)
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, ped_val, std_val) in enumerate(zip(scales, ped_tot/1000, ped_tot_std/1000)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_control_ped_tot.errorbar(scale, ped_val, yerr=std_val, color=gradient_color, 
-                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_control_ped_tot.fill_between(scales,
-                                        (ped_tot - ped_tot_std)/1000,
-                                        (ped_tot + ped_tot_std)/1000,
-                                        color=color, alpha=0.2, zorder=5)
-
-        # Vehicle Average Wait (Right Top) - Enhanced line styles with gradient - higher z-order
-        create_gradient_line(ax_control_veh_avg, scales, veh_avg_mean, color, lw=2.0, zorder=20, marker=marker)
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, veh_val, std_val) in enumerate(zip(scales, veh_avg_mean, veh_avg_std)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_control_veh_avg.errorbar(scale, veh_val, yerr=std_val, color=gradient_color, 
-                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_control_veh_avg.fill_between(scales,
-                                        veh_avg_mean - veh_avg_std,
-                                        veh_avg_mean + veh_avg_std,
-                                        color=color, alpha=0.2, zorder=5)
-
-        # Vehicle Total Wait (Right Bottom) - Enhanced line styles with gradient - higher z-order
-        veh_tot_k = veh_tot / 1000.0
-        veh_tot_k_std = veh_tot_std / 1000.0
-        create_gradient_line(ax_control_veh_tot, scales, veh_tot_k, color, lw=2.0, zorder=20, marker=marker)
-        
-        # Display standard deviation with gradient-matched colors - higher z-order
-        if use_error_bars:
-            # Use gradient colors for error bars to match line
-            for i, (scale, veh_val, std_val) in enumerate(zip(scales, veh_tot_k, veh_tot_k_std)):
-                gradient_color = get_gradient_color(color, i, len(scales))
-                ax_control_veh_tot.errorbar(scale, veh_val, yerr=std_val, color=gradient_color, 
-                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
-        else:
-            ax_control_veh_tot.fill_between(scales,
-                                        veh_tot_k - veh_tot_k_std,
-                                        veh_tot_k + veh_tot_k_std,
-                                        color=color, alpha=0.2, zorder=5)
-                                         
-        # Update max value seen in this plot (including std dev)
-        current_max = np.max(veh_tot_k + veh_tot_k_std)
-        if current_max > max_veh_tot_val:
-            max_veh_tot_val = current_max
-
-
-    # Order control legend handles to match labels
-    ordered_control_handles = []
-    temp_handle_dict = {h.get_label(): h for h in control_legend_handles}
-    for lbl in control_labels:
-        if lbl in temp_handle_dict:
-            ordered_control_handles.append(temp_handle_dict[lbl])
-
-    # Set Y limits for control plots
-    for ax in control_ped_panels + control_veh_panels:
-        # Set bottom limit first
-        ax.set_ylim(bottom=-0.5)
-
-    ax_control_veh_tot.set_ylim(top=3.9)
-    ax_control_veh_avg.set_ylim(top=75)
-
-    # --- Draw grid lines AFTER setting all y-limits ---
-    # This ensures grid lines align with the final tick positions
-    for ax in all_panels:
-        # Create custom grid manually with explicit z-order
-        # Get y ticks and draw horizontal grid lines - now after y-limits are set
-        y_ticks = ax.get_yticks()
-        for y in y_ticks:
-            ax.axhline(y=y, color='#f1f3f4', linestyle='-', linewidth=0.8, alpha=0.9, zorder=-90)
-        
-        # Draw vertical grid lines for all scales
-        for x in unique_scales:
-            ax.axvline(x=x, color='#f1f3f4', linestyle='-', linewidth=0.8, alpha=0.7, zorder=-90)
-    
-    # --- X-axis Ticks and Labels ---
-    # Select every other scale, EXCLUDING the last one
-    scales_to_show = unique_scales[:-1:2] # Select every other scale from all but the last
-
-    x_tick_labels = []
-    for s in scales_to_show:
-        if abs(s * 10 - round(s * 10)) < 1e-6:
-            x_tick_labels.append(f"{s:.1f}x")
-        else:
-            x_tick_labels.append(f"{s:.2f}x")
-
-    for ax in bottom_panels:
-        ax.set_xticks(scales_to_show) # Set major ticks only at these locations
-        ax.set_xticklabels(x_tick_labels)
-        ax.set_xlabel('Demand Scale', fontsize=fs, fontweight='medium') # Use updated fs
-
-    for ax in top_panels:
-        ax.tick_params(labelbottom=False) # Hide x-labels on top plots
-
-    # --- Y-axis Labels (using fig.text) ---
-    # Simplified labels, keeping units
-    # Adjusted positions for better centering relative to the taller figure
-    avg_y_pos = 0.72 # Adjusted vertical center for top row
-    tot_y_pos = 0.32 # Adjusted vertical center for bottom row
-
-    # Direct assignment for each position instead of using a loop with condition
-    fig.text(0.04, avg_y_pos, 'Average (s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-    fig.text(0.04, tot_y_pos, 'Total (×10³ s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-
-    fig.text(0.36, avg_y_pos, 'Average (s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-    fig.text(0.36, tot_y_pos, 'Total (×10³ s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-
-    fig.text(0.68, avg_y_pos, 'Average (s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-    fig.text(0.68, tot_y_pos, 'Total (×10³ s)', va='center', rotation='vertical', 
-             fontsize=fs+1, fontweight='medium')
-
-    # --- Legends (Split) with Rounded White Boxes ---
-    legend_kwargs = {
-        'loc': 'lower center',
-        'fontsize': fs - 2,        # Consistent with rcParams
-        'frameon': True,           # Turn on frame
-        'fancybox': True,          # Use rounded corners
-        'facecolor': 'white',      # Updated background to white
-        'edgecolor': '#e5e7eb',    # Consistent with rcParams
-        'framealpha': 0.98,        # Consistent with rcParams
-        'borderpad': 0.9,          # More generous padding
-        'labelspacing': 0.7,       # More breathing room between entries
-        'handletextpad': 0.8,      # More space between marker and text
-        'handlelength': 2.8,       # Longer line handles for clarity
-        'markerscale': 1.3,        # Larger markers in legend for better visibility
-        'columnspacing': 1.2       # Better spacing between columns
-    }
-
-    # Design Legend (a) - Centered under first column
-    # Adjusted y anchor for taller figure and space above
-    leg_a = fig.legend(handles=design_legend_handles, labels=design_labels,
-                       ncol=2,
-                       bbox_to_anchor=(0.215, -0.05), # Moved legend down
-                       **legend_kwargs)
-
-    # Control Legend (b, c) - Centered under middle/right columns
-    # Adjusted y anchor for taller figure and space above
-    leg_b_c = fig.legend(handles=ordered_control_handles, labels=control_labels,
-                         ncol=3,
-                         bbox_to_anchor=(0.675, -0.05), # Moved legend down
-                         **legend_kwargs)
-                         
-    # Increase the linewidth in the legends
-    for legend in [leg_a, leg_b_c]:
-        for line in legend.get_lines():
-            line.set_linewidth(2.5)  # Thicker lines in legend only
-
-    # --- Panel Labels (a), (b), (c) ---
-    # Positioned below the legends - Adjusted y position to be closer to legends
-    label_y_pos = -0.08 # Moved labels up relative to legends
-    label_fontsize = fs + 2 # Match title font size
-    fig.text(0.215, label_y_pos, '(a)', ha='center', va='center', fontsize=label_fontsize, fontweight='bold')
-    fig.text(0.505, label_y_pos, '(b)', ha='center', va='center', fontsize=label_fontsize, fontweight='bold')
-    fig.text(0.835, label_y_pos, '(c)', ha='center', va='center', fontsize=label_fontsize, fontweight='bold')
-
-
-    # --- Final Adjustments and Save ---
-    # Adjusted margins for taller figure and repositioned lower elements
-    plt.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.13) # Adjusted bottom margin
-    plt.savefig("design_control_results.pdf", bbox_inches='tight', dpi=300)
-    plt.close(fig)
-
-
-# # plot_design_results(new_design_unsignalized_results_path, 
-# #                     real_world_design_unsignalized_results_path,
-# #                     in_range_demand_scales = irds)
-
-# # plot_control_results(new_design_unsignalized_results_path,
-# #                                  new_design_tl_results_path,
-# #                                  new_design_ppo_results_path,
-# #                                  in_range_demand_scales = irds)
-
-
 def plot(design_and_control = True, 
          graphs_and_gmm = False,
          rewards_results = False):
@@ -2400,4 +1996,3 @@ plot()
 # plot_demand()
 
 # plot_gmm_top_down(gmm_pkl_path = "./runs/May09_12-21-15/gmm_iterations/gmm_i_eval14400000_b0_data.pkl")
-
