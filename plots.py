@@ -1255,9 +1255,7 @@ def plot_graphs_and_gmm( graph_a_path,
 def rewards_results_plot(combined_csv_codesign, 
                          combined_csv_control, 
                          codesign_added,
-                         codesign_removed,
                          separate_added,
-                         separate_removed,
                          data_type = "total", ):
     """
     (a) Contains both codesign and control reward plot
@@ -1413,7 +1411,7 @@ def rewards_results_plot(combined_csv_codesign,
                      edgecolor='none', zorder=2)
     
     # Separate control: Main line (moving average)
-    control_line, = ax1.plot(x_ctrl, ma_ctrl, color=COLOR_CONTROL, linewidth=2.5, zorder=3, label="Separate")
+    control_line, = ax1.plot(x_ctrl, ma_ctrl, color=COLOR_CONTROL, linewidth=2.5, zorder=3, label="Sequential")
 
     # Set y-axis limits for ax1
     ax1.set_ylim(-1450, 150)
@@ -1452,53 +1450,10 @@ def rewards_results_plot(combined_csv_codesign,
     for handle in legend_a.get_lines():
         handle.set_linewidth(3.5)
     
-    # --- Implement subplots (b) and (c) ---
-    # Function for gradient line creation (similar to plot_design_and_control_results)
-    def create_gradient_line(ax, x, y, base_color, lw=3.5, zorder=3, label=None):
-        # Create points
-        points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        # Convert hex to RGB
-        r = int(base_color[1:3], 16) / 255.0
-        g = int(base_color[3:5], 16) / 255.0
-        b = int(base_color[5:7], 16) / 255.0
-        
-        # Create lighter variant (for gradient end)
-        r2 = min(1.0, r + 0.15)
-        g2 = min(1.0, g + 0.15)
-        b2 = min(1.0, b + 0.15)
-        
-        # Create custom colormap
-        cmap = LinearSegmentedColormap.from_list(
-            "custom_gradient", 
-            [(r, g, b), (r2, g2, b2)],
-            N=100
-        )
-        
-        # Create a gradient effect along the line
-        norm = plt.Normalize(0, len(x)-1)
-        lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=lw, zorder=zorder)
-        lc.set_array(np.arange(len(x)))
-        
-        line = ax.add_collection(lc)
-        
-        # Add markers separately
-        scatter = ax.scatter(x, y, color=base_color, s=36, marker='o', 
-                            edgecolor='white', linewidth=1.0, zorder=zorder+1)
-        
-        # Create a dummy line with the right color for the legend
-        if label is not None:
-            dummy_line, = ax.plot([], [], color=base_color, lw=lw, marker='o', 
-                                 markersize=6, markeredgecolor='white', markeredgewidth=1.0,
-                                 label=label)
-            return dummy_line
-        return line
-    
     # Load results data for subplots (b) and (c) using get_averages
     data_cache = {}
     # Load data using get_averages - same approach as in plot_design_and_control_results
-    for path in [codesign_added, codesign_removed, separate_added, separate_removed]:
+    for path in [codesign_added, separate_added]:
         if path and path not in data_cache:
             data_false = get_averages(path, total=False)
             data_true = get_averages(path, total=True)
@@ -1506,7 +1461,7 @@ def rewards_results_plot(combined_csv_codesign,
     
     # Extract all scales from all results files
     all_scales = []
-    for path in [codesign_added, codesign_removed, separate_added, separate_removed]:
+    for path in [codesign_added, separate_added]:
         if path and path in data_cache:
             all_scales.extend(data_cache[path]['total_false'][0])
     unique_scales = np.sort(np.unique(np.array(all_scales)))
@@ -1531,10 +1486,8 @@ def rewards_results_plot(combined_csv_codesign,
     # Process results for pedestrian and vehicle
     for ax, title, domain in plot_configs:
         for path, plot_title, color, marker in [
-            (codesign_added, "Co-design +1", COLOR_CODESIGN, 'o'),   # Green with circle marker
-            (codesign_removed, "Co-design -1", COLOR_CODESIGN, '^'), # Green with triangle marker
-            (separate_added, "Separate +1", COLOR_CONTROL, 'o'),     # Blue with circle marker
-            (separate_removed, "Separate -1", COLOR_CONTROL, '^')    # Blue with triangle marker
+            (codesign_added, "Co-Optimization +1", COLOR_CODESIGN, 'o'),   # Green with circle marker
+            (separate_added, "Sequential +1", COLOR_CONTROL, 'o')      # Blue with circle marker
         ]:
             if not path or path not in data_cache:  # Skip if path is not provided or data not available
                 continue
@@ -1566,7 +1519,7 @@ def rewards_results_plot(combined_csv_codesign,
             
             # Plot line with markers - simplified approach instead of gradient line
             h, = ax.plot(scales, values, color=color, linewidth=2.5, 
-                        marker=marker, markersize=12, markeredgecolor='white', 
+                        marker=marker, markersize=8, markeredgecolor='white', 
                         markeredgewidth=1.5, label=plot_title, zorder=20)
             
             # Add error bars
@@ -1596,17 +1549,17 @@ def rewards_results_plot(combined_csv_codesign,
                 bc_legend_handles.append(h)
                 bc_legend_labels.append(plot_title)
 
-    # # Set specific y-axis limits for average data type
-    # if data_type == "average":
-    #     # Set y-limits for subplot (b) - Pedestrian
-    #     ax2.set_ylim(115, 185)
-    #     # Set y-limits for subplot (c) - Vehicle
-    #     ax3.set_ylim(-10, 200)
+    # Set specific y-axis limits for average data type
+    if data_type == "average":
+        # Set y-limits for subplot (b) - Pedestrian
+        ax2.set_ylim(-10, 100)
+        # Set y-limits for subplot (c) - Vehicle
+        ax3.set_ylim(-10, 250)
 
     # Create legend for subplot (a)
     legend_a = ax1.legend(
         handles=[codesign_line, control_line],
-        labels=["Co-design", "Separate"],
+        labels=["Co-Optimization", "Sequential"],
         loc='upper center',
         bbox_to_anchor=(0.5, -0.15),
         ncol=2,
@@ -1629,7 +1582,7 @@ def rewards_results_plot(combined_csv_codesign,
         labels=bc_legend_labels,
         loc='upper center',
         bbox_to_anchor=(0.68, 0.01),
-        ncol=4,
+        ncol=2,
         fontsize=fs - 2,
         frameon=True,
         fancybox=True,
@@ -1771,7 +1724,7 @@ def plot_gmm_top_down(gmm_pkl_path: str,
     legend.set_zorder(10)
 
     ax.set_xlabel('Location', fontweight='bold', fontsize=fs, color=label_color, labelpad=10)
-    ax.set_ylabel('Thickness', fontweight='bold', fontsize=fs, color=label_color, labelpad=10)
+    ax.set_ylabel('Width', fontweight='bold', fontsize=fs, color=label_color, labelpad=10)
     ax.set_title('GMM Distribution', fontweight='bold', fontsize=fs, color=label_color, pad=15)
     
     ax.tick_params(axis='both', which='major', labelsize=fs-2, colors=tick_color)
@@ -1924,25 +1877,45 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     fs = 23 # Updated font size
     n_yticks = 5 # Define the number of y-ticks for all subplots
 
-    # Define Colors (anonymous) - Adjusted to be less bright
-    COLOR_INDIAN_RED = '#C93038'     # For Real-world (Subdued red)
-    COLOR_SPRING_GREEN = '#3C9F40'   # For Design Agent (Ours) (Subdued green)
-    COLOR_DARK_ORCHID = '#8064A2'    # For Signalized (Softer purple)
-    COLOR_SLATE_GRAY = '#E67E22'     # For Unsignalized (Softer orange)
-    COLOR_ROYAL_BLUE = '#3771A1'     # For Control Agent (Ours) (Softer blue)
+    # Define Colors - Modern, sophisticated palette
+    COLOR_INDIAN_RED = '#E63946'     # For Real-world (Modern vibrant red)
+    COLOR_SPRING_GREEN = '#2D9334'   # For Design Agent (Ours) (Modern green)
+    COLOR_DARK_ORCHID = '#7C3AED'    # For Signalized (Modern purple)
+    COLOR_SLATE_GRAY = '#DC2626'     # For Unsignalized (Modern red-orange)
+    COLOR_ROYAL_BLUE = '#1D4ED8'     # For Control Agent (Ours) (Modern blue)
 
 
     # Map plot elements to Colors - Updated based on new scheme
     COLORS = {
-        'Design Agent (Ours)': COLOR_SPRING_GREEN,   # Design plot: Spring Green
+        'Design Agent (Ours)': '#2D9334',            # Design plot: Same green as control
         'Real-world':          COLOR_INDIAN_RED,     # Design plot: Indian Red
-        'Signalized':          COLOR_DARK_ORCHID,    # Control plots: Dark Orchid
-        'Unsignalized':        COLOR_SLATE_GRAY,     # Control plots: Slate Gray
-        'Control Agent (Ours)': COLOR_ROYAL_BLUE,     # Control plots: Royal Blue
+        'Signalized':          '#1f77b4',            # Control plots: Matplotlib Blue
+        'Unsignalized':        '#ff7f0e',            # Control plots: Matplotlib Orange
+        'Control Agent (Ours)': '#2D9334',          # Control plots: Same green
     }
     
-    # Helper function to create a gradient line
-    def create_gradient_line(ax, x, y, base_color, lw=3.5, zorder=3, label=None):
+    # Helper function to get gradient color at position
+    def get_gradient_color(base_color, position, total_positions):
+        """Get gradient color at specific position"""
+        r = int(base_color[1:3], 16) / 255.0
+        g = int(base_color[3:5], 16) / 255.0
+        b = int(base_color[5:7], 16) / 255.0
+        
+        # Interpolate to lighter color
+        r2 = min(1.0, r + 0.08)
+        g2 = min(1.0, g + 0.08)
+        b2 = min(1.0, b + 0.08)
+        
+        # Linear interpolation based on position
+        t = position / max(1, total_positions - 1)
+        r_interp = r + t * (r2 - r)
+        g_interp = g + t * (g2 - g)
+        b_interp = b + t * (b2 - b)
+        
+        return f"#{int(r_interp*255):02x}{int(g_interp*255):02x}{int(b_interp*255):02x}"
+
+    # Helper function to create a gradient line with matching colors
+    def create_gradient_line(ax, x, y, base_color, lw=2.5, zorder=3, label=None, marker='o'):
         # Create points
         points = np.array([x, y]).T.reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -1952,16 +1925,16 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         g = int(base_color[3:5], 16) / 255.0
         b = int(base_color[5:7], 16) / 255.0
         
-        # Create lighter variant (for gradient end) - more subtle increase
-        r2 = min(1.0, r + 0.15)  # Less dramatic lightening
-        g2 = min(1.0, g + 0.15)  # Less dramatic lightening
-        b2 = min(1.0, b + 0.15)  # Less dramatic lightening
+        # Create lighter variant (for gradient end) - subtle gradient for consistency
+        r2 = min(1.0, r + 0.08)  # Subtle lightening to maintain color consistency
+        g2 = min(1.0, g + 0.08)  # Subtle lightening to maintain color consistency  
+        b2 = min(1.0, b + 0.08)  # Subtle lightening to maintain color consistency
         
-        # Create custom colormap
+        # Create custom colormap with more segments for smoother gradient
         cmap = LinearSegmentedColormap.from_list(
             "custom_gradient", 
             [(r, g, b), (r2, g2, b2)],
-            N=100
+            N=256
         )
         
         # Create a gradient effect along the line
@@ -1971,14 +1944,22 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         
         line = ax.add_collection(lc)
         
-        # Add markers separately
-        scatter = ax.scatter(x, y, color=base_color, s=36, marker='o', 
-                            edgecolor='white', linewidth=1.0, zorder=zorder+1)
+        # Add markers separately with gradient colors to match line
+        marker_size = 140 if marker == '*' else 60  # Much larger markers for both
+        border_width = 0.8 if marker == '*' else 1.0  # Thinner borders for stars
+        
+        # Add markers with gradient colors
+        for i, (xi, yi) in enumerate(zip(x, y)):
+            gradient_color = get_gradient_color(base_color, i, len(x))
+            ax.scatter(xi, yi, color=gradient_color, s=marker_size, marker=marker, 
+                      edgecolor='white', linewidth=border_width, zorder=zorder+1)
         
         # Create a dummy line with the right color for the legend
         if label is not None:
-            dummy_line, = ax.plot([], [], color=base_color, lw=lw, marker='o', 
-                                 markersize=6, markeredgecolor='white', markeredgewidth=1.0,
+            marker_legend_size = 16 if marker == '*' else 10  # Much larger legend markers
+            legend_border_width = 0.8 if marker == '*' else 1.0  # Match scatter border
+            dummy_line, = ax.plot([], [], color=base_color, lw=lw, marker=marker, 
+                                 markersize=marker_legend_size, markeredgecolor='white', markeredgewidth=legend_border_width,
                                  label=label)
             return dummy_line
         return line
@@ -1986,38 +1967,38 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     # Enhanced styling setup for a more professional look
     mpl.rcParams.update({
         'font.family':        'sans-serif',
-        'font.sans-serif':    ['Open Sans', 'Arial', 'DejaVu Sans'],
-        'text.color':         '#202124',
-        'axes.edgecolor':     '#dadce0',     # Reverted to original lighter gray
-        'axes.linewidth':     1.0,           # Reverted to original width
-        'axes.titlesize':     fs + 2,        # Title size based on fs
-        'axes.titleweight':   'bold',
-        'axes.labelsize':     fs,            # Axis label size based on fs
-        'axes.labelweight':   'medium',      # Make labels slightly bolder
-        'xtick.color':        '#5f6368',     # Reverted to original gray tick color
-        'ytick.color':        '#5f6368',     # Reverted to original gray tick color
-        'xtick.labelsize':    fs - 1,        # Tick label size
-        'ytick.labelsize':    fs - 1,        # Tick label size
-        'xtick.major.width':  1.0,           # Reverted to original tick width
-        'ytick.major.width':  1.0,           # Reverted to original tick width
-        'grid.color':         '#e8eaed',     # Reverted to original grid color
-        'grid.linewidth':     0.8,
-        'grid.linestyle':     '--',
-        'grid.alpha':         0.7,           # Grid transparency
-        'legend.frameon':     True,          # Add frame to legend
-        'legend.framealpha':  0.9,           # Make legend background more opaque
-        'legend.edgecolor':   '#cccccc',     # Light gray legend border
-        'legend.fontsize':    fs - 2,        # Consistent legend font size
-        'figure.facecolor':   'white',
-        'axes.facecolor':     'white',
-        'legend.facecolor':   'white', 
-        'axes.titlepad':      12,            # Add padding below axis titles
-        'axes.spines.top':    False,         # Remove top spines globally
-        'axes.spines.right':  False          # Remove right spines globally
+        'font.sans-serif':    ['Inter', 'SF Pro Display', 'Segoe UI', 'Arial', 'DejaVu Sans'],
+        'text.color':         '#1f2937',
+        'axes.edgecolor':     '#d1d5db',     
+        'axes.linewidth':     0.8,           
+        'axes.titlesize':     fs + 1,        # Slightly smaller, cleaner titles
+        'axes.titleweight':   '600',         # Modern medium-bold weight
+        'axes.labelsize':     fs - 1,        # Slightly smaller labels
+        'axes.labelweight':   '500',         # Modern medium weight
+        'xtick.color':        '#6b7280',     # Modern neutral gray
+        'ytick.color':        '#6b7280',     # Modern neutral gray
+        'xtick.labelsize':    fs - 2,        # Smaller tick labels
+        'ytick.labelsize':    fs - 2,        # Smaller tick labels
+        'xtick.major.width':  0.8,           
+        'ytick.major.width':  0.8,           
+        'grid.color':         '#f9fafb',     
+        'grid.linewidth':     0.6,
+        'grid.linestyle':     '-',
+        'grid.alpha':         1.0,           
+        'legend.frameon':     True,          
+        'legend.framealpha':  0.98,          # More opaque
+        'legend.edgecolor':   '#e5e7eb',     # Softer border
+        'legend.fontsize':    fs - 3,        # Smaller legend text
+        'figure.facecolor':   '#ffffff',
+        'axes.facecolor':     '#ffffff',
+        'legend.facecolor':   '#ffffff', 
+        'axes.titlepad':      20,            # Extra space below titles
+        'axes.spines.top':    False,         
+        'axes.spines.right':  False          
     })
 
     # Create figure and grid (2 rows, 3 columns) - Height remains the same as previous
-    fig = plt.figure(figsize=(24, 12))
+    fig = plt.figure(figsize=(24, 10))
     # Adjusted spacing
     gs  = GridSpec(2, 3, figure=fig, hspace=0.10, wspace=0.20)
 
@@ -2064,8 +2045,8 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         ax.set_xlim(x_min - x_margin, x_max + x_margin)
         # Shade out-of-range areas with softer shading
         xlim = ax.get_xlim()
-        ax.axvspan(xlim[0], valid_min_scale, facecolor='grey', alpha=0.15, zorder=-100)
-        ax.axvspan(valid_max_scale, xlim[1], facecolor='grey', alpha=0.15, zorder=-100)
+        ax.axvspan(xlim[0], valid_min_scale, facecolor='#e2e8f0', alpha=0.6, zorder=-100)
+        ax.axvspan(valid_max_scale, xlim[1], facecolor='#e2e8f0', alpha=0.6, zorder=-100)
         
         # Turn off default grid
         ax.grid(False)
@@ -2079,6 +2060,14 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         
         # Set x ticks
         ax.set_xticks(unique_scales, minor=True)
+        
+        # Ensure bottom and left spines are visible
+        # ax.spines['bottom'].set_visible(True)
+        # ax.spines['left'].set_visible(True)
+        # ax.spines['bottom'].set_color('#6b7280')
+        # ax.spines['left'].set_color('#6b7280')
+        # ax.spines['bottom'].set_linewidth(0.8)
+        # ax.spines['left'].set_linewidth(0.8)
 
     # --- Plot Design Results (Left Column - Panel a) ---
     ax_design_avg.set_title('Pedestrian Arrival Time')
@@ -2099,13 +2088,17 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         _, _, _, tot_vals, _, _, tot_std = data_cache[path]['total_true']
 
         # Average Plot - Enhanced line styles with gradient - higher z-order
-        h = create_gradient_line(ax_design_avg, scales, avg_vals, color, lw=3.0, zorder=20, label=label)
+        marker = '*' if 'Ours' in label else 'o'
+        h = create_gradient_line(ax_design_avg, scales, avg_vals, color, lw=2.0, zorder=20, label=label, marker=marker)
         design_legend_handles.append(h) # Store handle for legend
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_design_avg.errorbar(scales, avg_vals, yerr=avg_std, color=color, capsize=4.5, 
-                                  elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, avg_val, std_val) in enumerate(zip(scales, avg_vals, avg_std)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_design_avg.errorbar(scale, avg_val, yerr=std_val, color=gradient_color, capsize=4.5, 
+                                      elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_design_avg.fill_between(scales, avg_vals - avg_std, avg_vals + avg_std, 
                                      color=color, alpha=0.2, zorder=5)
@@ -2113,12 +2106,15 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         # Total Plot - Enhanced line styles with gradient - higher z-order
         tot_k = tot_vals / 1000.0
         tot_k_std = tot_std / 1000.0
-        create_gradient_line(ax_design_tot, scales, tot_k, color, lw=3.0, zorder=20)
+        create_gradient_line(ax_design_tot, scales, tot_k, color, lw=2.0, zorder=20, marker=marker)
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_design_tot.errorbar(scales, tot_k, yerr=tot_k_std, color=color, capsize=4.5, 
-                                  elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, tot_val, std_val) in enumerate(zip(scales, tot_k, tot_k_std)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_design_tot.errorbar(scale, tot_val, yerr=std_val, color=gradient_color, capsize=4.5, 
+                                      elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_design_tot.fill_between(scales, tot_k - tot_k_std, tot_k + tot_k_std, 
                                      color=color, alpha=0.2, zorder=5)
@@ -2150,12 +2146,16 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         _, veh_tot, ped_tot, _, veh_tot_std, ped_tot_std, _ = data_cache[path]['total_true']
 
         # Pedestrian Average Wait (Middle Top) - Enhanced line styles with gradient - higher z-order
-        h_ped = create_gradient_line(ax_control_ped_avg, scales, ped_avg_mean, color, lw=3.0, zorder=20, label=label)
+        marker = '*' if 'Ours' in label else 'o'
+        h_ped = create_gradient_line(ax_control_ped_avg, scales, ped_avg_mean, color, lw=2.0, zorder=20, label=label, marker=marker)
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_control_ped_avg.errorbar(scales, ped_avg_mean, yerr=ped_avg_std, color=color, 
-                                 capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, ped_val, std_val) in enumerate(zip(scales, ped_avg_mean, ped_avg_std)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_control_ped_avg.errorbar(scale, ped_val, yerr=std_val, color=gradient_color, 
+                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_control_ped_avg.fill_between(scales,
                                          ped_avg_mean - ped_avg_std,
@@ -2167,12 +2167,15 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
              control_legend_handles.append(h_ped)
 
         # Pedestrian Total Wait (Middle Bottom) - Enhanced line styles with gradient - higher z-order
-        create_gradient_line(ax_control_ped_tot, scales, ped_tot/1000, color, lw=3.0, zorder=20)
+        create_gradient_line(ax_control_ped_tot, scales, ped_tot/1000, color, lw=2.0, zorder=20, marker=marker)
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_control_ped_tot.errorbar(scales, ped_tot/1000, yerr=ped_tot_std/1000, color=color, 
-                                 capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, ped_val, std_val) in enumerate(zip(scales, ped_tot/1000, ped_tot_std/1000)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_control_ped_tot.errorbar(scale, ped_val, yerr=std_val, color=gradient_color, 
+                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_control_ped_tot.fill_between(scales,
                                         (ped_tot - ped_tot_std)/1000,
@@ -2180,12 +2183,15 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
                                         color=color, alpha=0.2, zorder=5)
 
         # Vehicle Average Wait (Right Top) - Enhanced line styles with gradient - higher z-order
-        create_gradient_line(ax_control_veh_avg, scales, veh_avg_mean, color, lw=3.0, zorder=20)
+        create_gradient_line(ax_control_veh_avg, scales, veh_avg_mean, color, lw=2.0, zorder=20, marker=marker)
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_control_veh_avg.errorbar(scales, veh_avg_mean, yerr=veh_avg_std, color=color, 
-                                 capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, veh_val, std_val) in enumerate(zip(scales, veh_avg_mean, veh_avg_std)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_control_veh_avg.errorbar(scale, veh_val, yerr=std_val, color=gradient_color, 
+                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_control_veh_avg.fill_between(scales,
                                         veh_avg_mean - veh_avg_std,
@@ -2195,12 +2201,15 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         # Vehicle Total Wait (Right Bottom) - Enhanced line styles with gradient - higher z-order
         veh_tot_k = veh_tot / 1000.0
         veh_tot_k_std = veh_tot_std / 1000.0
-        create_gradient_line(ax_control_veh_tot, scales, veh_tot_k, color, lw=3.0, zorder=20)
+        create_gradient_line(ax_control_veh_tot, scales, veh_tot_k, color, lw=2.0, zorder=20, marker=marker)
         
-        # Display standard deviation based on chosen visualization method - higher z-order
+        # Display standard deviation with gradient-matched colors - higher z-order
         if use_error_bars:
-            ax_control_veh_tot.errorbar(scales, veh_tot_k, yerr=veh_tot_k_std, color=color, 
-                                 capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
+            # Use gradient colors for error bars to match line
+            for i, (scale, veh_val, std_val) in enumerate(zip(scales, veh_tot_k, veh_tot_k_std)):
+                gradient_color = get_gradient_color(color, i, len(scales))
+                ax_control_veh_tot.errorbar(scale, veh_val, yerr=std_val, color=gradient_color, 
+                                     capsize=4.5, elinewidth=2.0, capthick=2.2, alpha=0.85, fmt='none', zorder=10)
         else:
             ax_control_veh_tot.fill_between(scales,
                                         veh_tot_k - veh_tot_k_std,
@@ -2235,11 +2244,11 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         # Get y ticks and draw horizontal grid lines - now after y-limits are set
         y_ticks = ax.get_yticks()
         for y in y_ticks:
-            ax.axhline(y=y, color='#cccccc', linestyle='--', linewidth=1.0, alpha=0.75, zorder=-90)
+            ax.axhline(y=y, color='#f1f3f4', linestyle='-', linewidth=0.8, alpha=0.9, zorder=-90)
         
         # Draw vertical grid lines for all scales
         for x in unique_scales:
-            ax.axvline(x=x, color='#cccccc', linestyle='--', linewidth=0.9, alpha=0.65, zorder=-90)
+            ax.axvline(x=x, color='#f1f3f4', linestyle='-', linewidth=0.8, alpha=0.7, zorder=-90)
     
     # --- X-axis Ticks and Labels ---
     # Select every other scale, EXCLUDING the last one
@@ -2255,7 +2264,7 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     for ax in bottom_panels:
         ax.set_xticks(scales_to_show) # Set major ticks only at these locations
         ax.set_xticklabels(x_tick_labels)
-        ax.set_xlabel('Demand Scale', fontsize=fs + 1, fontweight='medium') # Use updated fs
+        ax.set_xlabel('Demand Scale', fontsize=fs, fontweight='medium') # Use updated fs
 
     for ax in top_panels:
         ax.tick_params(labelbottom=False) # Hide x-labels on top plots
@@ -2285,37 +2294,38 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     # --- Legends (Split) with Rounded White Boxes ---
     legend_kwargs = {
         'loc': 'lower center',
-        'fontsize': fs - 1,        # Slightly larger legend font
+        'fontsize': fs - 2,        # Consistent with rcParams
         'frameon': True,           # Turn on frame
         'fancybox': True,          # Use rounded corners
         'facecolor': 'white',      # Updated background to white
-        'edgecolor': '#cccccc',    # Slightly darker gray border
-        'framealpha': 0.95,        # Make box more opaque
-        'borderpad': 0.7,          # Padding inside the box
-        'labelspacing': 0.5,       # Spacing between legend entries
-        'handletextpad': 0.6,      # Space between line and text
-        'handlelength': 2.5,       # Longer line handles
-        'markerscale': 1.1         # Slightly larger markers in legend
+        'edgecolor': '#e5e7eb',    # Consistent with rcParams
+        'framealpha': 0.98,        # Consistent with rcParams
+        'borderpad': 0.9,          # More generous padding
+        'labelspacing': 0.7,       # More breathing room between entries
+        'handletextpad': 0.8,      # More space between marker and text
+        'handlelength': 2.8,       # Longer line handles for clarity
+        'markerscale': 1.3,        # Larger markers in legend for better visibility
+        'columnspacing': 1.2       # Better spacing between columns
     }
 
     # Design Legend (a) - Centered under first column
     # Adjusted y anchor for taller figure and space above
     leg_a = fig.legend(handles=design_legend_handles, labels=design_labels,
                        ncol=2,
-                       bbox_to_anchor=(0.215, -0.03), # Moved legend down
+                       bbox_to_anchor=(0.215, -0.05), # Moved legend down
                        **legend_kwargs)
 
     # Control Legend (b, c) - Centered under middle/right columns
     # Adjusted y anchor for taller figure and space above
     leg_b_c = fig.legend(handles=ordered_control_handles, labels=control_labels,
-                         ncol=1,
-                         bbox_to_anchor=(0.675, -0.03), # Moved legend down
+                         ncol=3,
+                         bbox_to_anchor=(0.675, -0.05), # Moved legend down
                          **legend_kwargs)
                          
     # Increase the linewidth in the legends
     for legend in [leg_a, leg_b_c]:
         for line in legend.get_lines():
-            line.set_linewidth(3.5)  # Thicker lines in legend only
+            line.set_linewidth(2.5)  # Thicker lines in legend only
 
     # --- Panel Labels (a), (b), (c) ---
     # Positioned below the legends - Adjusted y position to be closer to legends
@@ -2343,11 +2353,11 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
 # #                                  in_range_demand_scales = irds)
 
 
-def plot(design_and_control = False, 
+def plot(design_and_control = True, 
          graphs_and_gmm = False,
-         rewards_results = True):
+         rewards_results = False):
     
-    run_dir = "May09_11-34-05"
+    run_dir = "readout_32/May09_11-34-05"
 
     if design_and_control:
         eval_dir = "eval_May10_16-16-52"
@@ -2381,13 +2391,11 @@ def plot(design_and_control = False,
             combined_csv_codesign = "./runs/combined_rewards_codesign.csv",
             combined_csv_control = "./runs/combined_rewards_control_only.csv",
             codesign_added = "./runs/May09_11-34-05/results/codesign_added.json",
-            codesign_removed = "./runs/May09_11-34-05/results/codesign_removed.json",
             separate_added = "./runs/May11_10-18-09/results/separate_added.json",
-            separate_removed = "./runs/May11_10-18-09/results/separate_removed.json",
             data_type = "average"
         )
         
-# plot()
+plot()
 
 # plot_demand()
 
