@@ -25,38 +25,13 @@ wandb/
 ./simulation/scaled_trips/
 /simulation/scaled_trips/
 
-./consolidated_control_results.pdf
-./consolidated_design_results.pdf
-
-consolidated_control_results.pdf
-consolidated_design_results.pdf
-
-design_control_results.pdf
-./design_control_results.pdf
-
-graphs_gmm.pdf
-./graphs_gmm.pdf
-
-graphs_gmm.png
-./graphs_gmm.png
-
 temp.py
 ./temp.py
 
-rewards_results_plot.png
-./rewards_results_plot.png
-
-./demand.png
-demand.png
-
-./gmm_flat.png
-gmm_flat.png
-
-
-./design_control_results.png
-design_control_results.png
-
 CLAUDE.md
 
-rewards_results_plot.pdf
-./rewards_results_plot.pdf
+ablation/
+
+# All plot outputs
+*.pdf
+*.png

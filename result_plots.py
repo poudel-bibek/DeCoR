@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pandas as pd
 import pickle
@@ -28,13 +29,13 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     fs_legend = fs
 
     LINE_WIDTH = 3.5
-    MARKER_SIZE = {'*': 320, 'o': 140}
+    MARKER_SIZE = {'*': 400, 'o': 140}
     MARKER_BORDER = {'*': 1.0, 'o': 1.2}
     LEGEND_MARKER_SIZE = {'*': 26, 'o': 14}
     COLORS = {
         'DeCoR':        '#2D9334',
         'Real-world':   '#E63946',
-        'Signalized':   '#1f77b4',
+        'Fixed-time':   '#1f77b4',
         'Unsignalized': '#ff7f0e',
     }
 
@@ -178,7 +179,7 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     ax_veh_avg.set_title('Vehicle Wait Time')
 
     control_paths  = [control_tl_path, design_unsig_path, control_ppo_path]
-    control_labels = ['Signalized', 'Unsignalized', 'DeCoR']
+    control_labels = ['Fixed-time', 'Unsignalized', 'DeCoR']
     control_handles = []
 
     for path, label in zip(control_paths, control_labels):
@@ -267,6 +268,12 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
 
     COLOR_CODESIGN = '#3C9F40'
     COLOR_CONTROL = '#3771A1'
+    MARKER_CODESIGN = '*'
+    MARKER_CONTROL = 'o'
+    MARKER_SIZE_CODESIGN = 400
+    MARKER_SIZE_CONTROL = 140
+    LEGEND_MARKER_SIZE_CODESIGN = 26
+    LEGEND_MARKER_SIZE_CONTROL = 14
 
     # --- Load and process CSV data ---
     df_c = pd.read_csv(combined_csv_codesign)
@@ -358,9 +365,9 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
     ]
 
     for ax, title in plot_configs:
-        for path, color in [
-            (codesign_added, COLOR_CODESIGN),
-            (separate_added, COLOR_CONTROL),
+        for path, color, marker, ms in [
+            (codesign_added, COLOR_CODESIGN, MARKER_CODESIGN, MARKER_SIZE_CODESIGN),
+            (separate_added, COLOR_CONTROL, MARKER_CONTROL, MARKER_SIZE_CONTROL),
         ]:
             if not path or path not in data_cache:
                 continue
@@ -380,9 +387,9 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
                     vals = vals_raw / 1000.0
                     vals_std = vals_std_raw / 1000.0
 
-            ax.plot(scales, vals, color=color, linewidth=LINE_WIDTH,
-                    marker='o', markersize=12, markeredgecolor='white',
-                    markeredgewidth=1.5, zorder=20)
+            ax.plot(scales, vals, color=color, linewidth=LINE_WIDTH, zorder=19)
+            ax.scatter(scales, vals, color=color, marker=marker, s=ms,
+                       edgecolors='white', linewidths=1.0, zorder=20)
             ax.fill_between(scales, vals - vals_std, vals + vals_std,
                             color=color, alpha=0.15, zorder=5)
 
@@ -411,14 +418,18 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
         'handlelength': 2.5,
     }
 
+    legend_handles = [
+        mlines.Line2D([], [], color=COLOR_CONTROL, linewidth=LINE_WIDTH,
+                      marker=MARKER_CONTROL, markersize=LEGEND_MARKER_SIZE_CONTROL,
+                      markeredgecolor='white', markeredgewidth=1.0, label='Sequential'),
+        mlines.Line2D([], [], color=COLOR_CODESIGN, linewidth=LINE_WIDTH,
+                      marker=MARKER_CODESIGN, markersize=LEGEND_MARKER_SIZE_CODESIGN,
+                      markeredgecolor='white', markeredgewidth=1.0, label='DeCoR'),
+    ]
     shared_legend = fig.legend(
-        handles=[codesign_line, control_line],
-        labels=["Co-Optimization", "Sequential"],
+        handles=legend_handles,
         loc='upper center', bbox_to_anchor=(0.53, -0.05), ncol=2,
         **legend_kwargs)
-
-    for line in shared_legend.get_lines():
-        line.set_linewidth(LINE_WIDTH + 0.5)
 
     # --- Save ---
     plt.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.13)
@@ -540,7 +551,7 @@ def _greedy_spatial_match(points_a, points_b, max_dist):
 
 
 def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
-                        surf_res=200, y_scale=1.0, node_size=50,
+                        surf_res=200, y_scale=0.85, node_size=50,
                         y_crop=(12, 86)):
     """
     1x3 figure: 3D GMM surface, 2D GMM top-down contour, Pedestrian Network.
@@ -727,9 +738,9 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
                        facecolors=cmap(dens_3d_norm), linewidth=0.05,
                        edgecolor='white', alpha=0.9, antialiased=True, shade=False)
 
-    ax_3d.set_xlabel('Location', fontsize=fs_tick, labelpad=18, color=LABEL_COLOR)
-    ax_3d.set_ylabel('Width', fontsize=fs_tick, labelpad=20, color=LABEL_COLOR)
-    ax_3d.set_zlabel('Density', fontsize=fs_tick, labelpad=14, color=LABEL_COLOR)
+    ax_3d.set_xlabel('Location', fontsize=fs, labelpad=18, color=LABEL_COLOR)
+    ax_3d.set_ylabel('Width', fontsize=fs, labelpad=20, color=LABEL_COLOR)
+    ax_3d.set_zlabel('Density', fontsize=fs, labelpad=14, color=LABEL_COLOR)
 
     xy_ticks_3d = [0.0, 0.5, 1.0]
     z_ticks_3d = [0.0, 0.4, 0.8]
@@ -855,9 +866,9 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
     MAX_THICKNESS = 15.0  # meters (from config)
 
     # Draw clean road backbone (G2, crosswalks already removed)
-    nx.draw_networkx_edges(G2, pos2, ax=ax_net, edge_color='#8b929a', width=1.4, alpha=0.9)
-    nx.draw_networkx_nodes(G2, pos2, ax=ax_net, node_size=node_size * 0.7,
-                           node_color='#b0b5bc', edgecolors='#8b929a', linewidths=0.5)
+    nx.draw_networkx_edges(G2, pos2, ax=ax_net, edge_color='#333333', width=1.8, alpha=0.9)
+    nx.draw_networkx_nodes(G2, pos2, ax=ax_net, node_size=node_size * 2.0,
+                           node_color='#999999', edgecolors='#222222', linewidths=1.2)
 
     # --- Removed crosswalks: G1's 7 originals as faded red × ---
     mid_nodes_1 = [n for n in G1.nodes() if "_mid" in str(n) and n in pos1]
@@ -928,6 +939,328 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
     plt.close(fig)
 
 
+def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
+                            surf_res=200, y_crop=(12, 86)):
+    """
+    1x2 figure: 3D GMM surface (left), 2D GMM top-down contour (right).
+    No pedestrian network subplot.
+    """
+    fs = 28
+    fs_tick = fs - 2
+    dpi = 300
+
+    LABEL_COLOR = '#202124'
+    TICK_COLOR = '#5f6368'
+    GRID_COLOR = (0.0, 0.0, 0.0, 0.2)
+    GRID_STYLE = dict(color=GRID_COLOR, linestyle=(0, (5, 5)), linewidth=0.5)
+
+    xmin, xmax = 0.0, 1.05
+    ymin, ymax = -0.02, 1.05
+
+    # --- Load GMM ---
+    gmm_data = _load_pickle_with_cpu_fallback(gmm_path)
+    gmm_single = gmm_data[0]
+    device = gmm_single.component_distribution.loc.device
+
+    # Density grid
+    X = np.linspace(xmin, xmax, surf_res)
+    Y = np.linspace(ymin, ymax, surf_res)
+    Xg, Yg = np.meshgrid(X, Y)
+    grid_pts = torch.tensor(np.column_stack([Xg.ravel(), Yg.ravel()]),
+                            dtype=torch.float32, device=device)
+
+    # Modify means for visualization
+    locs = gmm_single.component_distribution.loc.detach().cpu().numpy()
+    modified_locs = locs.copy()
+    modified_locs[0][1] = 0.38
+    modified_locs[1][1] = 0.36
+    modified_locs[5][1] = 0.32
+    modified_locs[2][1] = 0.32
+    modified_locs[4][1] = 0.30
+    gmm_single.component_distribution.loc = torch.tensor(modified_locs, dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        dens_3d = torch.exp(gmm_single.log_prob(grid_pts)).cpu().numpy().reshape(surf_res, surf_res)
+    dens_3d_norm = (dens_3d - dens_3d.min()) / dens_3d.ptp()
+
+    # --- Style ---
+    mpl.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Inter', 'SF Pro Display', 'Segoe UI', 'Arial', 'DejaVu Sans'],
+        'text.color': '#1f2937',
+        'axes.edgecolor': '#d1d5db', 'axes.linewidth': 0.8,
+        'axes.titlesize': fs, 'axes.titleweight': '600',
+        'axes.labelsize': fs, 'axes.labelweight': '500',
+        'xtick.color': '#6b7280', 'ytick.color': '#6b7280',
+        'xtick.labelsize': fs_tick, 'ytick.labelsize': fs_tick,
+        'figure.facecolor': '#ffffff', 'axes.facecolor': '#ffffff',
+        'axes.spines.top': False, 'axes.spines.right': False,
+    })
+
+    # --- Figure layout: 3D (left), 2D (right) ---
+    fig = plt.figure(figsize=(24, 7), dpi=dpi)
+    outer = fig.add_gridspec(1, 2, width_ratios=[1.5, 0.5], wspace=-0.08)
+    ax_3d = fig.add_subplot(outer[0, 0], projection="3d")
+    ax_2d = fig.add_subplot(outer[0, 1])
+
+    # ==========================================
+    # Left: 3D GMM surface
+    # ==========================================
+    cmap = plt.get_cmap("coolwarm", 24)
+    ax_3d.plot_surface(Xg, Yg, dens_3d_norm, rstride=2, cstride=2,
+                       facecolors=cmap(dens_3d_norm), linewidth=0.05,
+                       edgecolor='white', alpha=0.9, antialiased=True, shade=False)
+
+    ax_3d.set_xlabel('Location', fontsize=fs, labelpad=28, color=LABEL_COLOR)
+    ax_3d.set_ylabel('Width', fontsize=fs, labelpad=30, color=LABEL_COLOR)
+    ax_3d.set_zlabel('Density', fontsize=fs, labelpad=22, color=LABEL_COLOR)
+
+    xy_ticks_3d = [0.0, 0.5, 1.0]
+    z_ticks_3d = [0.0, 0.4, 0.8]
+    ax_3d.set_xticks(xy_ticks_3d)
+    ax_3d.set_xticklabels(['0.0', '0.5', '1.0   '])
+    ax_3d.set_yticks(xy_ticks_3d)
+    ax_3d.set_yticklabels(['   0.0', '0.5', '1.0'])
+    ax_3d.set_zticks(z_ticks_3d)
+    ax_3d.set_zlim(0, 0.8)
+    ax_3d.tick_params(axis='both', which='major', labelsize=fs_tick, colors=TICK_COLOR, pad=8)
+    ax_3d.tick_params(axis='z', which='major', pad=6)
+
+    ax_3d.grid(True)
+    for axis_obj in [ax_3d.xaxis, ax_3d.yaxis, ax_3d.zaxis]:
+        axis_obj._axinfo["grid"].update(GRID_STYLE)
+
+    ax_3d.set_xlim(xmin, xmax)
+    ax_3d.set_ylim(ymin, ymax)
+    ax_3d.view_init(elev=35, azim=-50)
+    ax_3d.set_box_aspect((1.05, 1.0, 0.7))
+
+    # ==========================================
+    # Right: 2D top-down GMM contour
+    # ==========================================
+    num_grid_2d = 100
+    td_ymin, td_ymax = 0.0, 1.05
+    X2d = np.linspace(xmin, xmax, num_grid_2d)
+    Y2d = np.linspace(td_ymin, td_ymax, num_grid_2d)
+    X2d_g, Y2d_g = np.meshgrid(X2d, Y2d)
+    pts_2d = torch.tensor(np.column_stack([X2d_g.ravel(), Y2d_g.ravel()]),
+                          dtype=torch.float32, device=device)
+    with torch.no_grad():
+        Z_2d = np.exp(gmm_single.log_prob(pts_2d).detach().cpu().numpy()).reshape(X2d_g.shape)
+    Z_2d_ptp = Z_2d.ptp()
+    Z_2d_norm = (Z_2d - Z_2d.min()) / Z_2d_ptp if Z_2d_ptp > 0 else np.zeros_like(Z_2d)
+
+    GRID_2D_COLOR = (0.0, 0.0, 0.0, 0.55)
+    for y_val in np.arange(0.0, 1.1, 0.2):
+        ax_2d.axhline(y=y_val, color=GRID_2D_COLOR, linestyle=(0, (5, 5)), linewidth=0.5, zorder=-10)
+    for x_val in np.arange(0.0, 1.1, 0.2):
+        ax_2d.axvline(x=x_val, color=GRID_2D_COLOR, linestyle=(0, (5, 5)), linewidth=0.5, zorder=-10)
+
+    cmap_2d = plt.get_cmap("coolwarm", 256)
+    contour = ax_2d.contourf(X2d_g, Y2d_g, Z_2d_norm, levels=20, cmap=cmap_2d, alpha=0.85, zorder=1)
+
+    cbar = fig.colorbar(contour, ax=ax_2d, shrink=0.77, aspect=15, pad=0.08)
+    cbar.set_label('Density', fontsize=fs, color=LABEL_COLOR)
+    cbar.set_ticks([0.0, 0.5, 1.0])
+    cbar.ax.tick_params(labelsize=fs_tick, colors=TICK_COLOR)
+
+    means_2d = gmm_single.component_distribution.loc.detach().cpu().numpy()
+    ax_2d.scatter(means_2d[:, 0], means_2d[:, 1], c='#0066ff', marker='o', s=120,
+                  edgecolors='black', linewidths=0.7, zorder=2)
+
+    sample_locs = np.array([
+        means_2d[3, 0],
+        np.mean([means_2d[0, 0], means_2d[1, 0], means_2d[5, 0]]),
+        np.mean([means_2d[2, 0], means_2d[4, 0]]),
+        means_2d[6, 0],
+    ])
+    sample_widths = np.array([
+        means_2d[3, 1],
+        np.mean([means_2d[0, 1], means_2d[1, 1], means_2d[5, 1]]),
+        np.mean([means_2d[2, 1], means_2d[4, 1]]),
+        means_2d[6, 1],
+    ])
+    ax_2d.scatter(sample_locs, sample_widths, c='#00c853', marker='*', s=300,
+                  edgecolors='white', linewidths=1.0, zorder=3)
+    x_range_plot = ax_2d.get_xlim()[1] - ax_2d.get_xlim()[0]
+    offset_x = x_range_plot * 0.04
+    for i, (loc, thick) in enumerate(zip(sample_locs, sample_widths)):
+        ax_2d.text(loc + offset_x, thick, f'C{i+1}', fontsize=fs,
+                   ha='left', va='center', zorder=4)
+
+    LEGEND_MARKER_SZ = 11
+    gmm_handles = [
+        mlines.Line2D([], [], color='#0066ff', marker='o', markersize=LEGEND_MARKER_SZ * 1.35,
+                      markeredgecolor='black', markeredgewidth=0.7, linewidth=0, label='Mean'),
+        mlines.Line2D([], [], color='#00c853', marker='*', markersize=LEGEND_MARKER_SZ * 1.8,
+                      markeredgecolor='white', markeredgewidth=1.0, linewidth=0, label='Sample'),
+    ]
+    ax_2d.legend(handles=gmm_handles, loc='upper right', ncol=1,
+                 frameon=True, fancybox=True, facecolor='white',
+                 edgecolor='#cccccc', framealpha=1.0, fontsize=fs - 4,
+                 borderpad=0.4, labelspacing=0.3, handletextpad=0.15,
+                 markerscale=1.0)
+
+    ax_2d.set_xlim(0.0, 1.05)
+    ax_2d.set_ylim(0.0, 1.05)
+    ax_2d.set_xticks([0.5, 1.0])
+    ax_2d.set_yticks([0.0, 0.5, 1.0])
+    ax_2d.tick_params(axis='x', which='major', pad=6)
+    ax_2d.tick_params(axis='y', which='major', pad=6)
+    ax_2d.set_xlabel('Location', fontsize=fs, color=LABEL_COLOR)
+    ax_2d.set_ylabel('Width', fontsize=fs, color=LABEL_COLOR)
+    ax_2d.tick_params(axis='both', which='major', labelsize=fs_tick, colors=TICK_COLOR)
+    ax_2d.spines['top'].set_visible(False)
+    ax_2d.spines['right'].set_visible(False)
+    ax_2d.spines['left'].set_color(TICK_COLOR)
+    ax_2d.spines['bottom'].set_color(TICK_COLOR)
+    ax_2d.set_aspect('equal')
+    # Nudge 0.0 width tick down to align with location ticks
+    fig.canvas.draw()
+    for label in ax_2d.yaxis.get_ticklabels():
+        if label.get_text() == '0.0':
+            label.set_verticalalignment('top')
+
+    # --- Save ---
+    plt.subplots_adjust(left=0.03, right=0.99, top=0.93, bottom=0.12)
+
+    # Shift 2D subplot + colorbar closer to 3D
+    fig.canvas.draw()
+    shift = -0.068
+    for ax_obj in [ax_2d, cbar.ax]:
+        bb = ax_obj.get_position()
+        ax_obj.set_position([bb.x0 + shift, bb.y0, bb.width, bb.height])
+
+    # Aligned titles centered over each subplot
+    fig.canvas.draw()
+    bb_3d = ax_3d.get_position()
+    bb_2d = ax_2d.get_position()
+    title_y = 0.90
+    fig.text((bb_3d.x0 + bb_3d.x1) / 2, title_y, 'Gaussian Mixture Model',
+             fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
+    fig.text((bb_2d.x0 + bb_2d.x1) / 2, title_y, 'GMM Top Down',
+             fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
+    fig.savefig('./graphs_gmm_v2.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
+
+def _load_ablation_data(json_path):
+    """Load JSON and extract wait time metrics for vehicles and pedestrians."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    max_veh, max_ped = [], []
+    tot_veh, tot_ped = [], []
+    for scale_factor in data.values():
+        for iteration in scale_factor.values():
+            max_veh.append(iteration['max_wait_times_veh'])
+            max_ped.append(iteration['max_wait_times_ped'])
+            tot_veh.append(iteration['total_veh_waiting_time'])
+            tot_ped.append(iteration['total_ped_waiting_time'])
+    return max_veh, max_ped, tot_veh, tot_ped
+
+
+def reward_ablation_plot(mwaq_path, mwaq_linear_path, mwaq_exponential_path):
+    """
+    1x2 figure: (a) Total Wait Time, (b) Maximum Wait Time.
+    Grouped bar charts comparing MWAQ variants for vehicles and pedestrians.
+    """
+    # --- Sizing ---
+    fs = 28
+    fs_tick = fs - 2
+    fs_legend = fs
+
+    VEH_COLOR = '#3771A1'   # Steel blue (Sequential from rewards plot)
+    PED_COLOR = '#3C9F40'   # Green (DeCoR from rewards plot)
+
+    # --- Style ---
+    mpl.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Inter', 'SF Pro Display', 'Segoe UI', 'Arial', 'DejaVu Sans'],
+        'text.color': '#1f2937',
+        'axes.edgecolor': '#d1d5db', 'axes.linewidth': 0.8,
+        'axes.titlesize': fs, 'axes.titleweight': '600',
+        'axes.labelsize': fs, 'axes.labelweight': '500',
+        'xtick.color': '#6b7280', 'ytick.color': '#6b7280',
+        'xtick.labelsize': fs_tick, 'ytick.labelsize': fs_tick,
+        'xtick.major.width': 0.8, 'ytick.major.width': 0.8,
+        'grid.color': '#f9fafb', 'grid.linewidth': 0.6, 'grid.linestyle': '-', 'grid.alpha': 1.0,
+        'legend.frameon': True, 'legend.framealpha': 0.98,
+        'legend.edgecolor': '#e5e7eb', 'legend.fontsize': fs_legend,
+        'figure.facecolor': '#ffffff', 'axes.facecolor': '#ffffff', 'legend.facecolor': '#ffffff',
+        'axes.titlepad': 20, 'axes.spines.top': False, 'axes.spines.right': False,
+    })
+
+    # --- Figure layout ---
+    fig, (ax_tot, ax_max) = plt.subplots(1, 2, figsize=(24, 5), dpi=300,
+                                         gridspec_kw={'wspace': 0.30})
+
+    # --- Load data ---
+    linear_max_veh, linear_max_ped, linear_tot_veh, linear_tot_ped = _load_ablation_data(mwaq_linear_path)
+    mwaq_max_veh, mwaq_max_ped, mwaq_tot_veh, mwaq_tot_ped = _load_ablation_data(mwaq_path)
+    exp_max_veh, exp_max_ped, exp_tot_veh, exp_tot_ped = _load_ablation_data(mwaq_exponential_path)
+
+    reward_functions = ['MWAQ', 'LI-MWAQ', 'EI-MWAQ']
+    x_pos = np.arange(len(reward_functions))
+    width = 0.25
+
+    bar_style = dict(edgecolor='white', linewidth=0.8, capsize=8,
+                     error_kw={'elinewidth': 3.0, 'ecolor': '#333333', 'capthick': 3.0})
+
+    def style_bar_ax(ax, ylabel, title, ylim_top):
+        ax.set_ylabel(ylabel, fontsize=fs, fontweight='bold', labelpad=12)
+        ax.set_xlabel('Reward Function', fontsize=fs, fontweight='bold')
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(reward_functions, fontsize=fs_tick)
+        ax.set_ylim([0, ylim_top])
+        ax.yaxis.set_major_locator(MaxNLocator(5))
+        ax.set_xlim(-0.5, len(reward_functions) - 0.5)
+        ax.tick_params(labelsize=fs_tick)
+        ax.set_facecolor('white')
+        ax.set_axisbelow(True)
+        ax.grid(True, axis='y', linestyle='--', linewidth=0.6, alpha=0.4, color='#999999')
+
+    # (a) Total Wait Time (left)
+    tot_veh_means = [np.mean(mwaq_tot_veh) / 1000, np.mean(linear_tot_veh) / 1000, np.mean(exp_tot_veh) / 1000]
+    tot_veh_stds = [np.std(mwaq_tot_veh) / 1000, np.std(linear_tot_veh) / 1000, np.std(exp_tot_veh) / 1000]
+    tot_ped_means = [np.mean(mwaq_tot_ped) / 1000, np.mean(linear_tot_ped) / 1000, np.mean(exp_tot_ped) / 1000]
+    tot_ped_stds = [np.std(mwaq_tot_ped) / 1000, np.std(linear_tot_ped) / 1000, np.std(exp_tot_ped) / 1000]
+
+    bar_style = dict(linewidth=1.2, capsize=8,
+                     error_kw={'elinewidth': 3.0, 'ecolor': '#333333', 'capthick': 3.0})
+    ax_tot.bar(x_pos - width / 2, tot_veh_means, width, yerr=tot_veh_stds,
+               label='Vehicle', color=VEH_COLOR, alpha=0.9, edgecolor=VEH_COLOR, **bar_style)
+    ax_tot.bar(x_pos + width / 2, tot_ped_means, width, yerr=tot_ped_stds,
+               label='Pedestrian', color=PED_COLOR, alpha=0.9, edgecolor=PED_COLOR, **bar_style)
+    style_bar_ax(ax_tot, 'Total Wait Time (×10³ s)', 'Total Wait Time', 5.5)
+    ax_tot.set_yticks([0, 1, 2, 3, 4, 5])
+
+    # (b) Maximum Wait Time (right)
+    max_veh_means = [np.mean(mwaq_max_veh), np.mean(linear_max_veh), np.mean(exp_max_veh)]
+    max_veh_stds = [np.std(mwaq_max_veh), np.std(linear_max_veh), np.std(exp_max_veh)]
+    max_ped_means = [np.mean(mwaq_max_ped), np.mean(linear_max_ped), np.mean(exp_max_ped)]
+    max_ped_stds = [np.std(mwaq_max_ped), np.std(linear_max_ped), np.std(exp_max_ped)]
+
+    ax_max.bar(x_pos - width / 2, max_veh_means, width, yerr=max_veh_stds,
+               label='Vehicle', color=VEH_COLOR, alpha=0.9, edgecolor=VEH_COLOR, **bar_style)
+    ax_max.bar(x_pos + width / 2, max_ped_means, width, yerr=max_ped_stds,
+               label='Pedestrian', color=PED_COLOR, alpha=0.9, edgecolor=PED_COLOR, **bar_style)
+    style_bar_ax(ax_max, 'Max Wait Time (s)', 'Maximum Wait Time', 110)
+    ax_max.set_yticks([0, 20, 40, 60, 80, 100])
+
+    # --- Shared legend ---
+    handles, labels = ax_tot.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', ncol=2, fontsize=fs_legend,
+               frameon=True, fancybox=True, facecolor='white',
+               edgecolor='#e5e7eb', framealpha=0.98,
+               bbox_to_anchor=(0.525, -0.22))
+
+    # --- Save ---
+    plt.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.13)
+    fig.savefig('./reward_ablation.pdf', dpi=300, bbox_inches='tight')
+    fig.savefig('./reward_ablation.png', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     run_dir = "readout_32/May09_11-34-05"
     eval_dir = "eval_May10_16-16-52"
@@ -954,4 +1287,16 @@ if __name__ == "__main__":
         graph_a_path=f'./runs/{run_dir}/graph_iterations/graph_i_0_data.pkl',
         graph_b_path=f'./runs/{run_dir}/graph_iterations/graph_i_eval_final_data.pkl',
         gmm_path=f'./runs/{run_dir}/gmm_iterations/gmm_i_eval_final_b0_data.pkl',
+    )
+
+    plot_graphs_and_gmm_v2(
+        graph_a_path=f'./runs/{run_dir}/graph_iterations/graph_i_0_data.pkl',
+        graph_b_path=f'./runs/{run_dir}/graph_iterations/graph_i_eval_final_data.pkl',
+        gmm_path=f'./runs/{run_dir}/gmm_iterations/gmm_i_eval_final_b0_data.pkl',
+    )
+
+    reward_ablation_plot(
+        mwaq_path='./ablation/mwaq.json',
+        mwaq_linear_path='./ablation/mwaq_linear.json',
+        mwaq_exponential_path='./ablation/mwaq_exponential.json',
     )

@@ -898,63 +898,8 @@ def graph_to_video():
 
 
 
-def _load_graph(path):
-    obj = pickle.load(open(path, "rb"))
-    return obj[0] if isinstance(obj, tuple) else obj
 
-def _load_pickle_with_cpu_fallback(path):
-    """
-    Load pickles that may contain torch storages serialized on CUDA.
-    Falls back to CPU mapping when CUDA is unavailable.
-    """
-    with open(path, "rb") as f:
-        try:
-            return pickle.load(f)
-        except RuntimeError as e:
-            err = str(e)
-            if "Attempting to deserialize object on a CUDA device" not in err:
-                raise
-            f.seek(0)
-            original_torch_load = torch.load
-
-            def cpu_torch_load(*args, **kwargs):
-                kwargs.setdefault("map_location", torch.device("cpu"))
-                return original_torch_load(*args, **kwargs)
-
-            torch.load = cpu_torch_load
-            try:
-                return pickle.load(f)
-            finally:
-                torch.load = original_torch_load
-
-def _greedy_spatial_match(points_a, points_b, max_dist):
-    """
-    One-to-one spatial matching between two point sets using globally
-    sorted pair distances (greedy assignment).
-    """
-    if len(points_a) == 0 or len(points_b) == 0:
-        return []
-
-    pairs = []
-    for i, a in enumerate(points_a):
-        for j, b in enumerate(points_b):
-            d = float(np.hypot(a[0] - b[0], a[1] - b[1]))
-            if d <= max_dist:
-                pairs.append((d, i, j))
-    pairs.sort(key=lambda x: x[0])
-
-    used_a = set()
-    used_b = set()
-    matches = []
-    for d, i, j in pairs:
-        if i in used_a or j in used_b:
-            continue
-        used_a.add(i)
-        used_b.add(j)
-        matches.append((i, j, d))
-    return matches
-
-def _crop_graph(G_orig, lower, upper):
+### _crop_graph PLACEHOLDER_START
     pos_orig = nx.get_node_attributes(G_orig, "pos")
     if len(pos_orig) != G_orig.number_of_nodes():
         pos_orig = nx.spring_layout(G_orig, seed=42) # Fallback
@@ -1695,8 +1640,7 @@ def rewards_results_plot(combined_csv_codesign,
 
     # Final adjustments
     plt.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.13)
-    plt.savefig("rewards_results_plot.pdf", dpi=dpi, bbox_inches='tight', pad_inches=0.1)
-    plt.close(fig)
+### PLACEHOLDER_END
 
 def plot_gmm_top_down(gmm_pkl_path: str, 
                                location_range: tuple[float, float] = (0.0, 1.05), 

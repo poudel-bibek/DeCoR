@@ -848,23 +848,24 @@ class GAT_v2_ActorCritic(nn.Module):
         # The higher ppo memory needs to store the proposals and log_probs without considering the merging operations.
         # The number of actual proposals is corresponding to the merged proposals.
 
-        # For testing, explicitly keep only selected proposals and invalidate others
-        # [0.1250, 0.9750], [0.4000, 0.4875], [0.7250, 0.5750], [0.8500, 0.0500]
-        desired_proposals = torch.tensor([[0.1250, 0.9750], [0.4000, 0.4875], [0.7250, 0.5750]], device=device)
-        num_desired = desired_proposals.shape[0]
+        # For testing
+        # # Explicitly keep only selected proposals and invalidate others
+        # # [0.1250, 0.9750], [0.4000, 0.4875], [0.7250, 0.5750], [0.8500, 0.0500]
+        # desired_proposals = torch.tensor([[0.1250, 0.9750], [0.4000, 0.4875], [0.7250, 0.5750]], device=device)
+        # num_desired = desired_proposals.shape[0]
 
-        # Reset all proposals to -1
-        merged_proposals[:] = -1.0  
+        # # Reset all proposals to -1
+        # merged_proposals[:] = -1.0  
 
-        # Set the desired proposals explicitly
-        merged_proposals[0, :num_desired] = desired_proposals
+        # # Set the desired proposals explicitly
+        # merged_proposals[0, :num_desired] = desired_proposals
 
-        # Update num_proposals accordingly
-        num_proposals[0] = num_desired
+        # # Update num_proposals accordingly
+        # num_proposals[0] = num_desired
 
-        # Debugging output
-        print(f"\nFinal merged_proposals: {merged_proposals}")
-        print(f"\nFinal num_proposals: {num_proposals}")
+        # # Debugging output
+        # print(f"\nFinal merged_proposals: {merged_proposals}")
+        # print(f"\nFinal num_proposals: {num_proposals}")
                 
         return original_proposals, merged_proposals, num_proposals, log_probs
     
