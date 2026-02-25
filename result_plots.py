@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import pickle
 import torch
+import xml.etree.ElementTree as ET
+from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -823,7 +825,7 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
     offset_x = x_range_plot * 0.04
     for i, (loc, thick) in enumerate(zip(sample_locs, sample_widths)):
         ax_2d.text(loc + offset_x, thick, f'C{i+1}', fontsize=fs,
-                   ha='left', va='center', zorder=4)
+                   ha='left', va='center', fontweight='bold', zorder=4)
 
     LEGEND_MARKER_SZ = 11
     legend_kw = dict(loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=2,
@@ -945,7 +947,7 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
     1x2 figure: 3D GMM surface (left), 2D GMM top-down contour (right).
     No pedestrian network subplot.
     """
-    fs = 28
+    fs = 24
     fs_tick = fs - 2
     dpi = 300
 
@@ -998,7 +1000,7 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
     })
 
     # --- Figure layout: 3D (left), 2D (right) ---
-    fig = plt.figure(figsize=(24, 7), dpi=dpi)
+    fig = plt.figure(figsize=(26, 7), dpi=dpi)
     outer = fig.add_gridspec(1, 2, width_ratios=[1.5, 0.5], wspace=-0.08)
     ax_3d = fig.add_subplot(outer[0, 0], projection="3d")
     ax_2d = fig.add_subplot(outer[0, 1])
@@ -1059,7 +1061,7 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
     cmap_2d = plt.get_cmap("coolwarm", 256)
     contour = ax_2d.contourf(X2d_g, Y2d_g, Z_2d_norm, levels=20, cmap=cmap_2d, alpha=0.85, zorder=1)
 
-    cbar = fig.colorbar(contour, ax=ax_2d, shrink=0.77, aspect=15, pad=0.08)
+    cbar = fig.colorbar(contour, ax=ax_2d, shrink=0.92, aspect=15, pad=0.08, fraction=0.046 * 1.15)
     cbar.set_label('Density', fontsize=fs, color=LABEL_COLOR)
     cbar.set_ticks([0.0, 0.5, 1.0])
     cbar.ax.tick_params(labelsize=fs_tick, colors=TICK_COLOR)
@@ -1086,7 +1088,7 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
     offset_x = x_range_plot * 0.04
     for i, (loc, thick) in enumerate(zip(sample_locs, sample_widths)):
         ax_2d.text(loc + offset_x, thick, f'C{i+1}', fontsize=fs,
-                   ha='left', va='center', zorder=4)
+                   ha='left', va='center', fontweight='bold', zorder=4)
 
     LEGEND_MARKER_SZ = 11
     gmm_handles = [
@@ -1114,7 +1116,6 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
     ax_2d.spines['right'].set_visible(False)
     ax_2d.spines['left'].set_color(TICK_COLOR)
     ax_2d.spines['bottom'].set_color(TICK_COLOR)
-    ax_2d.set_aspect('equal')
     # Nudge 0.0 width tick down to align with location ticks
     fig.canvas.draw()
     for label in ax_2d.yaxis.get_ticklabels():
@@ -1131,14 +1132,22 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
         bb = ax_obj.get_position()
         ax_obj.set_position([bb.x0 + shift, bb.y0, bb.width, bb.height])
 
-    # Aligned titles centered over each subplot
+    # Match 2D subplot height to colorbar height, then make square
+    fig.canvas.draw()
+    cb_bb = cbar.ax.get_position()
+    bb_2d = ax_2d.get_position()
+    fig_w, fig_h = fig.get_size_inches()
+    square_width = cb_bb.height * fig_h / fig_w  # convert height to width in fig coords
+    ax_2d.set_position([bb_2d.x0, cb_bb.y0, square_width, cb_bb.height])
+
+    # Aligned titles centered over each subplot at same y
     fig.canvas.draw()
     bb_3d = ax_3d.get_position()
     bb_2d = ax_2d.get_position()
     title_y = 0.90
     fig.text((bb_3d.x0 + bb_3d.x1) / 2, title_y, 'Gaussian Mixture Model',
              fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
-    fig.text((bb_2d.x0 + bb_2d.x1) / 2, title_y, 'GMM Top Down',
+    fig.text((bb_2d.x0 + bb_2d.x1) / 2, title_y, 'Contour Map',
              fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
     fig.savefig('./graphs_gmm_v2.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
@@ -1261,6 +1270,111 @@ def reward_ablation_plot(mwaq_path, mwaq_linear_path, mwaq_exponential_path):
     plt.close(fig)
 
 
+def plot_demand(
+    xml_ped_path: str = "./simulation/original_pedtrips.xml",
+    xml_veh_path: str = "./simulation/original_vehtrips.xml",
+    bin_width: int = 60,
+    figsize: tuple[int, int] = (14, 4),):
+
+    """
+    Produce side-by-side demand plots:
+
+    (a) Pedestrians
+    (b) Vehicles
+    """
+
+    def _extract_depart_times(xml_path: str | Path, tag: str):
+        departs = []
+        for _, elem in ET.iterparse(xml_path, events=("start",)):
+            if elem.tag == tag and "depart" in elem.attrib:
+                departs.append(float(elem.attrib["depart"]))
+            elem.clear()
+        return np.asarray(departs)
+
+    def _counts_per_minute(departs: np.ndarray):
+        edges = np.arange(0, departs.max() + bin_width, bin_width)
+        counts, _ = np.histogram(departs, bins=edges)
+        centers = edges[:-1] + bin_width / 2
+        return centers, counts
+
+    def _nice_ticks(data_min: float, data_max: float, step: int):
+        first = np.floor(data_min / step) * step
+        ticks = first + step * np.arange(6)
+        while data_max > ticks[-2]:
+            ticks += step
+        return ticks[:6], (ticks[0], ticks[-1])
+
+    fs         = 18
+    gray_tick  = "#5f6368"
+    label_col  = "#202124"
+    ped_col    = "#6A5ACD"                # slate-blue neon
+    veh_col    = "#FF7F50"                # coral neon
+    grid_kw    = dict(color='black',
+                      linestyle=(0, (5, 5)),
+                      linewidth=0.4,
+                      alpha=0.2)
+
+    ped_x, ped_y = _counts_per_minute(
+        _extract_depart_times(xml_ped_path, "person"))
+    veh_x, veh_y = _counts_per_minute(
+        _extract_depart_times(xml_veh_path, "trip"))
+
+    ped_ticks, ped_ylim = _nice_ticks(ped_y.min(), ped_y.max(), 10)
+    veh_ticks, veh_ylim = _nice_ticks(veh_y.min(), veh_y.max(), 2)
+    ped_ylim = (ped_ylim[0], ped_ylim[1]-5)
+    veh_ylim = (veh_ylim[0], veh_ylim[1]-1)
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=False)
+
+    for ax, x, y, col, title in (
+        (axes[0], ped_x, ped_y, ped_col, "Pedestrian"),
+        (axes[1], veh_x, veh_y, veh_col, "Vehicle"),
+    ):
+        ax.plot(x, y, color=col, linewidth=2.5)
+
+        # titles & labels
+        ax.set_title(title, fontweight="bold", color=label_col, fontsize=fs)
+        ax.set_xlabel("Simulation Time (s)",    color=label_col, fontsize=fs)
+        ax.set_ylabel("No. of Departures",      color=label_col, fontsize=fs)
+
+        # ticks
+        ax.tick_params(colors=gray_tick, labelsize=fs)
+        if ax is axes[0]:
+            ax.set_yticks(ped_ticks[:-1])
+            ax.set_ylim(ped_ylim)
+        else:
+            ax.set_yticks(veh_ticks[:-1])
+            ax.set_ylim(veh_ylim)
+
+        # X-axis ticks 0-35 with x10^2 offset
+        xticks = np.arange(0, 3501, 500)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"{t // 100}" for t in xticks])
+        ax.annotate(
+            r"$\times10^{2}$",
+            xy=(0.99, -0.03),
+            xycoords="axes fraction",
+            ha="left",
+            va="center",
+            fontsize=fs - 8,
+            color=gray_tick,
+        )
+
+        # grid & spines
+        ax.grid(True, **grid_kw)
+        ax.axvline(x=2400, color='green', linestyle=(0, (5, 3)), linewidth=2.5, alpha=0.9, zorder=5)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        for spine in ("left", "bottom"):
+            ax.spines[spine].set_color(gray_tick)
+
+    # small space between panels
+    fig.subplots_adjust(wspace=0.08)
+    plt.tight_layout()
+
+    plt.savefig("./demand.pdf", dpi=300, bbox_inches="tight", pad_inches=0.1)
+    plt.close()
+
+
 if __name__ == "__main__":
     run_dir = "readout_32/May09_11-34-05"
     eval_dir = "eval_May10_16-16-52"
@@ -1300,3 +1414,5 @@ if __name__ == "__main__":
         mwaq_linear_path='./ablation/mwaq_linear.json',
         mwaq_exponential_path='./ablation/mwaq_exponential.json',
     )
+
+    plot_demand()
