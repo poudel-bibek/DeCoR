@@ -1274,7 +1274,7 @@ def plot_demand(
     xml_ped_path: str = "./simulation/original_pedtrips.xml",
     xml_veh_path: str = "./simulation/original_vehtrips.xml",
     bin_width: int = 60,
-    figsize: tuple[int, int] = (14, 4),):
+    figsize: tuple[int, int] = (14, 3.5),):
 
     """
     Produce side-by-side demand plots:
@@ -1297,22 +1297,22 @@ def plot_demand(
         centers = edges[:-1] + bin_width / 2
         return centers, counts
 
-    def _nice_ticks(data_min: float, data_max: float, step: int):
+    def _nice_ticks(data_min: float, data_max: float, step: int, n=5):
         first = np.floor(data_min / step) * step
-        ticks = first + step * np.arange(6)
+        ticks = first + step * np.arange(n + 1)
         while data_max > ticks[-2]:
             ticks += step
-        return ticks[:6], (ticks[0], ticks[-1])
+        return ticks[:n], (ticks[0], ticks[-1])
 
     fs         = 18
     gray_tick  = "#5f6368"
     label_col  = "#202124"
     ped_col    = "#6A5ACD"                # slate-blue neon
     veh_col    = "#FF7F50"                # coral neon
-    grid_kw    = dict(color='black',
+    grid_kw    = dict(color='#999999',
                       linestyle=(0, (5, 5)),
-                      linewidth=0.4,
-                      alpha=0.2)
+                      linewidth=0.25,
+                      alpha=0.17)
 
     ped_x, ped_y = _counts_per_minute(
         _extract_depart_times(xml_ped_path, "person"))
@@ -1333,17 +1333,20 @@ def plot_demand(
 
         # titles & labels
         ax.set_title(title, fontweight="bold", color=label_col, fontsize=fs)
-        ax.set_xlabel("Simulation Time (s)",    color=label_col, fontsize=fs)
-        ax.set_ylabel("No. of Departures",      color=label_col, fontsize=fs)
+        ax.set_xlabel("Time-step (s)",    color=label_col, fontsize=fs)
+        if ax is axes[0]:
+            ax.set_ylabel("No. of Departures", color=label_col, fontsize=fs, fontweight='bold')
+        else:
+            ax.set_ylabel("")
 
         # ticks
         ax.tick_params(colors=gray_tick, labelsize=fs)
         if ax is axes[0]:
-            ax.set_yticks(ped_ticks[:-1])
-            ax.set_ylim(ped_ylim)
+            ax.set_yticks([20, 30, 40, 50, 60])
+            ax.set_ylim(19, 61)
         else:
-            ax.set_yticks(veh_ticks[:-1])
-            ax.set_ylim(veh_ylim)
+            ax.set_yticks([0, 2, 4, 6, 8])
+            ax.set_ylim(-1, 9)
 
         # X-axis ticks 0-35 with x10^2 offset
         xticks = np.arange(0, 3501, 500)
@@ -1351,17 +1354,17 @@ def plot_demand(
         ax.set_xticklabels([f"{t // 100}" for t in xticks])
         ax.annotate(
             r"$\times10^{2}$",
-            xy=(0.99, -0.03),
+            xy=(1.03, -0.03),
             xycoords="axes fraction",
             ha="left",
             va="center",
-            fontsize=fs - 8,
+            fontsize=fs - 4,
             color=gray_tick,
         )
 
         # grid & spines
         ax.grid(True, **grid_kw)
-        ax.axvline(x=2400, color='green', linestyle=(0, (5, 3)), linewidth=2.5, alpha=0.9, zorder=5)
+        ax.axvline(x=2400, color='green', linestyle=(0, (3, 3)), linewidth=3.5, alpha=0.9, zorder=5)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         for spine in ("left", "bottom"):
