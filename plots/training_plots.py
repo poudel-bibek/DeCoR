@@ -1,3 +1,12 @@
+import os
+import sys
+
+# Ensure project root is on sys.path so absolute imports (utils, config, etc.) work
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import json
 import xml.etree.ElementTree as ET
 import torch
@@ -17,6 +26,13 @@ from matplotlib.ticker import MaxNLocator, MultipleLocator
 from matplotlib.gridspec import GridSpec
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
+
+# ---------------------------------------------------------------------------
+# Path helpers — resolve relative to project root regardless of CWD
+# ---------------------------------------------------------------------------
+def _out(*parts):
+    """Join parts relative to the plots/ directory (for output files)."""
+    return os.path.join(_SCRIPT_DIR, *parts)
 
 def count_consecutive_ones_filtered(actions):
     """
@@ -48,7 +64,7 @@ def count_consecutive_ones_filtered(actions):
 
     return counts
 
-def plot_avg_consecutive_ones(file_path, output_path="./results/sampled_actions_retro.pdf"):
+def plot_avg_consecutive_ones(file_path, output_path=None):
     """
     Creates a clean, professional plot of the average sum of consecutive occurrences of '1's
     per training iteration with a vibrant appearance.
@@ -57,6 +73,8 @@ def plot_avg_consecutive_ones(file_path, output_path="./results/sampled_actions_
         file_path (str): Path to the JSON file containing the data.
         output_path (str): Path to save the output PDF file.
     """
+    if output_path is None:
+        output_path = _out("sampled_actions_retro.pdf")
 
     # Load data
     with open(file_path, "r") as file:
@@ -340,7 +358,7 @@ def plot_control_results(*json_paths, in_range_demand_scales):
 
     # plt.tight_layout()
     plt.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.11, wspace=0.10, hspace=0.12)
-    plt.savefig("consolidated_control_results.pdf", bbox_inches='tight', dpi=300)
+    plt.savefig(_out("consolidated_control_results.pdf"), bbox_inches='tight', dpi=300)
     plt.close(fig)
 
 def plot_design_results(*json_paths, in_range_demand_scales):
@@ -469,7 +487,7 @@ def plot_design_results(*json_paths, in_range_demand_scales):
                fontsize=fs)
 
     plt.subplots_adjust(left=0.1, right=0.98, top=0.96, bottom=0.10, wspace=0.10, hspace=0.12) # Adjust margins
-    plt.savefig('consolidated_design_results.pdf', dpi=300, bbox_inches='tight')
+    plt.savefig(_out('consolidated_design_results.pdf'), dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_consolidated_insights(sampled_actions_file_path, conflict_json_file_path, switching_freq_data_path):
@@ -880,7 +898,7 @@ def plot_consolidated_insights(sampled_actions_file_path, conflict_json_file_pat
     plt.subplots_adjust(wspace=0.23, bottom=0.1)  # Adjusted bottom margin to make room for labels
 
     # Save figure
-    plt.savefig("./results/consolidated_insights.pdf", dpi=300, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(_out("consolidated_insights.pdf"), dpi=300, bbox_inches='tight', pad_inches=0.1)
 
     plt.show()
     return fig
@@ -1108,7 +1126,7 @@ def plot_gmm_top_down(gmm_pkl_path: str,
     ax.set_xlim(location_range)
     ax.set_ylim(thickness_range)
 
-    output_filename = "gmm_flat.png"
+    output_filename = _out("gmm_flat.png")
     
     plt.subplots_adjust(bottom=0.2)
 

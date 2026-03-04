@@ -25,9 +25,6 @@ wandb/
 ./simulation/scaled_trips/
 /simulation/scaled_trips/
 
-temp.py
-./temp.py
-
 CLAUDE.md
 
 ablation/

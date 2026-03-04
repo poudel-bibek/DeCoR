@@ -1,3 +1,13 @@
+import os
+import sys
+
+# Ensure project root is on sys.path so absolute imports (utils, config, etc.) work
+# regardless of which directory the script is invoked from.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import json
 import numpy as np
 import pandas as pd
@@ -14,7 +24,23 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 import networkx as nx
 import matplotlib.lines as mlines
+import matplotlib.patheffects as pe
+import matplotlib.patches as mpatches
+import matplotlib.image as mpimg
+import sumolib
+from collections import defaultdict
 from utils import get_averages
+
+# ---------------------------------------------------------------------------
+# Path helpers — resolve relative to project root regardless of CWD
+# ---------------------------------------------------------------------------
+def _proj(*parts):
+    """Join parts relative to the project root."""
+    return os.path.join(_PROJECT_ROOT, *parts)
+
+def _out(*parts):
+    """Join parts relative to the plots/ directory (for output files)."""
+    return os.path.join(_SCRIPT_DIR, *parts)
 
 
 def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
@@ -252,7 +278,7 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
 
     # --- Save ---
     plt.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.13)
-    plt.savefig("design_control_results.pdf", bbox_inches='tight', dpi=300)
+    plt.savefig(_out("design_control_results.pdf"), bbox_inches='tight', dpi=300)
     plt.close(fig)
 
 
@@ -343,7 +369,7 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
     x_ticks = np.arange(0, MAX_STEPS + 1e6, 5e6)
     ax1.set_xticks(x_ticks)
     ax1.set_xticklabels([f'{int(x/1e6)}' for x in x_ticks])
-    ax1.set_xlabel('Environment Step (×10$^6$)', fontsize=fs, fontweight='medium')
+    ax1.set_xlabel('Environment Step (×10⁶)', fontsize=fs, fontweight='medium')
     ax1.set_ylabel('Control Reward (×10²)', fontsize=fs, fontweight='bold')
     ax1.grid(True, linestyle='--', linewidth=0.8, alpha=0.7, zorder=-5)
 
@@ -435,7 +461,7 @@ def rewards_results_plot(combined_csv_codesign, combined_csv_control,
 
     # --- Save ---
     plt.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.13)
-    plt.savefig("rewards_results_plot.pdf", dpi=300, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(_out("rewards_results_plot.pdf"), dpi=300, bbox_inches='tight', pad_inches=0.1)
     plt.close(fig)
 
 
@@ -560,7 +586,7 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
 
     The 2D subplot and network subplot share crosswalk positions derived from
     centroid-merging of GMM component means:
-      C1 = component 3 (isolated), C2 = centroid(0,1,5), C3 = midpoint(2,4), C4 = component 6 (isolated).
+      MB1 = component 3 (isolated), MB2 = centroid(0,1,5), MB3 = midpoint(2,4), MB4 = component 6 (isolated).
     Network crosswalk structures are placed at these positions
     (normalizer: x_min=2158.19, x_max=2925.80; width: 2.0–15.0m).
     """
@@ -627,7 +653,7 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
                 if xn in pos2_raw:
                     del pos2_raw[xn]
 
-    # 3) Pre-compute new crosswalk physical x positions (shifted C3/C4)
+    # 3) Pre-compute new crosswalk physical x positions (shifted MB3/MB4)
     NORM_X_MIN_PRE, NORM_X_MAX_PRE = 2158.19, 2925.80
     _gmm_tmp = _load_pickle_with_cpu_fallback(gmm_path)
     _locs_tmp = _gmm_tmp[0].component_distribution.loc.detach().cpu().numpy().copy()
@@ -800,32 +826,40 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
                   edgecolors='black', linewidths=0.7, zorder=2)
 
     # Sampled markers — positions derived from centroid/merging of GMM components:
-    #   C1: coincide with isolated mean (component 3) — single mean, no merging
-    #   C2: centroid of three clustered means (components 0, 1, 5) — merged cluster
-    #   C3: midpoint of two clustered means (components 2, 4) — merged cluster
-    #   C4: coincide with isolated bottom-right mean (component 6) — single mean, no merging
+    #   MB1: coincide with isolated mean (component 3) — single mean, no merging
+    #   MB2: centroid of three clustered means (components 0, 1, 5) — merged cluster
+    #   MB3: midpoint of two clustered means (components 2, 4) — merged cluster
+    #   MB4: coincide with isolated bottom-right mean (component 6) — single mean, no merging
     # These same positions are used for the orange "New" crosswalk dots on the network subplot,
     # mapped to physical coordinates via NORM_X_MIN/MAX = 2158.19 / 2925.80 and
     # width denormalized via MIN_THICKNESS=2.0, MAX_THICKNESS=15.0.
     sample_locs = np.array([
-        means_2d[3, 0],                                              # C1
-        np.mean([means_2d[0, 0], means_2d[1, 0], means_2d[5, 0]]),  # C2
-        np.mean([means_2d[2, 0], means_2d[4, 0]]),                  # C3
-        means_2d[6, 0],                                              # C4
+        means_2d[3, 0],                                              # MB1
+        np.mean([means_2d[0, 0], means_2d[1, 0], means_2d[5, 0]]),  # MB2
+        np.mean([means_2d[2, 0], means_2d[4, 0]]),                  # MB3
+        means_2d[6, 0],                                              # MB4
     ])
     sample_widths = np.array([
-        means_2d[3, 1],                                              # C1
-        np.mean([means_2d[0, 1], means_2d[1, 1], means_2d[5, 1]]),  # C2
-        np.mean([means_2d[2, 1], means_2d[4, 1]]),                  # C3
-        means_2d[6, 1],                                              # C4
+        means_2d[3, 1],                                              # MB1
+        np.mean([means_2d[0, 1], means_2d[1, 1], means_2d[5, 1]]),  # MB2
+        np.mean([means_2d[2, 1], means_2d[4, 1]]),                  # MB3
+        means_2d[6, 1],                                              # MB4
     ])
     ax_2d.scatter(sample_locs, sample_widths, c='#00c853', marker='^', s=160,
                   edgecolors='white', linewidths=1.0, zorder=3)
     x_range_plot = ax_2d.get_xlim()[1] - ax_2d.get_xlim()[0]
     offset_x = x_range_plot * 0.04
+    txt_effects = [pe.withStroke(linewidth=3.5, foreground='black'), pe.Normal()]
+    fs_mb = fs - 1
     for i, (loc, thick) in enumerate(zip(sample_locs, sample_widths)):
-        ax_2d.text(loc + offset_x, thick, f'C{i+1}', fontsize=fs,
-                   ha='left', va='center', fontweight='bold', zorder=4)
+        if i == 3:  # MB4: place label to the left
+            ax_2d.text(loc - offset_x, thick, f'MB{i+1}', fontsize=fs_mb,
+                       ha='right', va='center', fontweight='bold', zorder=4,
+                       color='white', path_effects=txt_effects)
+        else:
+            ax_2d.text(loc + offset_x, thick, f'MB{i+1}', fontsize=fs_mb,
+                       ha='left', va='center', fontweight='bold', zorder=4,
+                       color='white', path_effects=txt_effects)
 
     LEGEND_MARKER_SZ = 11
     legend_kw = dict(loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=2,
@@ -837,7 +871,7 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
         mlines.Line2D([], [], color='#0066ff', marker='o', markersize=LEGEND_MARKER_SZ * 1.5,
                       markeredgecolor='black', markeredgewidth=0.7, linewidth=0, label='Mean'),
         mlines.Line2D([], [], color='#00c853', marker='^', markersize=LEGEND_MARKER_SZ * 1.5,
-                      markeredgecolor='white', markeredgewidth=1.0, linewidth=0, label='Sample'),
+                      markeredgecolor='white', markeredgewidth=1.0, linewidth=0, label='Maxima'),
     ]
     ax_2d.legend(handles=gmm_handles, loc='upper right', ncol=1,
                  frameon=True, fancybox=True, facecolor='white',
@@ -882,12 +916,12 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
                        c='#ff1744', alpha=0.85, linewidths=3.0, zorder=10)
 
     # --- New crosswalks: 4 GMM-derived positions as green stars ---
-    # Network uses shifted C3/C4 so two old crosswalks sit to the right of C4
+    # Network uses shifted MB3/MB4 so two old crosswalks sit to the right of MB4
     net_sample_locs = np.array([
-        sample_locs[0],  # C1 — unchanged
-        sample_locs[1],  # C2 — unchanged
-        0.70,            # C3 — shifted slightly left
-        0.84,            # C4 — shifted left
+        sample_locs[0],  # MB1 — unchanged
+        sample_locs[1],  # MB2 — unchanged
+        0.70,            # MB3 — shifted slightly left
+        0.84,            # MB4 — shifted left
     ])
     NORM_X_MIN, NORM_X_MAX = 2158.19, 2925.80
     new_phys_x = NORM_X_MIN + net_sample_locs * (NORM_X_MAX - NORM_X_MIN)
@@ -937,7 +971,7 @@ def plot_graphs_and_gmm(graph_a_path, graph_b_path, gmm_path,
 
     # --- Save ---
     plt.subplots_adjust(left=0.03, right=0.99, top=0.93, bottom=0.22, wspace=0.25)
-    fig.savefig('./graphs_gmm.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    fig.savefig(_out('graphs_gmm.png'), dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
 
@@ -1086,16 +1120,24 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
                   edgecolors='white', linewidths=1.0, zorder=3)
     x_range_plot = ax_2d.get_xlim()[1] - ax_2d.get_xlim()[0]
     offset_x = x_range_plot * 0.04
+    txt_effects = [pe.withStroke(linewidth=3.5, foreground='black'), pe.Normal()]
+    fs_mb = fs - 1
     for i, (loc, thick) in enumerate(zip(sample_locs, sample_widths)):
-        ax_2d.text(loc + offset_x, thick, f'C{i+1}', fontsize=fs,
-                   ha='left', va='center', fontweight='bold', zorder=4)
+        if i == 3:  # MB4: place label to the left
+            ax_2d.text(loc - offset_x, thick, f'MB{i+1}', fontsize=fs_mb,
+                       ha='right', va='center', fontweight='bold', zorder=4,
+                       color='white', path_effects=txt_effects)
+        else:
+            ax_2d.text(loc + offset_x, thick, f'MB{i+1}', fontsize=fs_mb,
+                       ha='left', va='center', fontweight='bold', zorder=4,
+                       color='white', path_effects=txt_effects)
 
     LEGEND_MARKER_SZ = 11
     gmm_handles = [
         mlines.Line2D([], [], color='#0066ff', marker='o', markersize=LEGEND_MARKER_SZ * 1.35,
                       markeredgecolor='black', markeredgewidth=0.7, linewidth=0, label='Mean'),
         mlines.Line2D([], [], color='#00c853', marker='*', markersize=LEGEND_MARKER_SZ * 1.8,
-                      markeredgecolor='white', markeredgewidth=1.0, linewidth=0, label='Sample'),
+                      markeredgecolor='white', markeredgewidth=1.0, linewidth=0, label='Maxima'),
     ]
     ax_2d.legend(handles=gmm_handles, loc='upper right', ncol=1,
                  frameon=True, fancybox=True, facecolor='white',
@@ -1149,7 +1191,7 @@ def plot_graphs_and_gmm_v2(graph_a_path, graph_b_path, gmm_path,
              fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
     fig.text((bb_2d.x0 + bb_2d.x1) / 2, title_y, 'Contour Map',
              fontsize=fs, fontweight='bold', ha='center', va='bottom', color=LABEL_COLOR)
-    fig.savefig('./graphs_gmm_v2.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    fig.savefig(_out('graphs_gmm_v2.png'), dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
 
@@ -1240,7 +1282,8 @@ def reward_ablation_plot(mwaq_path, mwaq_linear_path, mwaq_exponential_path):
                label='Vehicle', color=VEH_COLOR, alpha=0.9, edgecolor=VEH_COLOR, **bar_style)
     ax_tot.bar(x_pos + width / 2, tot_ped_means, width, yerr=tot_ped_stds,
                label='Pedestrian', color=PED_COLOR, alpha=0.9, edgecolor=PED_COLOR, **bar_style)
-    style_bar_ax(ax_tot, 'Total Wait Time (×10³ s)', 'Total Wait Time', 5.5)
+    style_bar_ax(ax_tot, 'Total Wait (×10³ s)', 'Total Wait Time', 5.5)
+    ax_tot.yaxis.set_label_coords(-0.08, 0.5)
     ax_tot.set_yticks([0, 1, 2, 3, 4, 5])
 
     # (b) Maximum Wait Time (right)
@@ -1253,7 +1296,7 @@ def reward_ablation_plot(mwaq_path, mwaq_linear_path, mwaq_exponential_path):
                label='Vehicle', color=VEH_COLOR, alpha=0.9, edgecolor=VEH_COLOR, **bar_style)
     ax_max.bar(x_pos + width / 2, max_ped_means, width, yerr=max_ped_stds,
                label='Pedestrian', color=PED_COLOR, alpha=0.9, edgecolor=PED_COLOR, **bar_style)
-    style_bar_ax(ax_max, 'Max Wait Time (s)', 'Maximum Wait Time', 110)
+    style_bar_ax(ax_max, 'Max Wait (s)', 'Maximum Wait Time', 110)
     ax_max.set_yticks([0, 20, 40, 60, 80, 100])
 
     # --- Shared legend ---
@@ -1265,16 +1308,16 @@ def reward_ablation_plot(mwaq_path, mwaq_linear_path, mwaq_exponential_path):
 
     # --- Save ---
     plt.subplots_adjust(left=0.06, right=0.99, top=0.93, bottom=0.13)
-    fig.savefig('./reward_ablation.pdf', dpi=300, bbox_inches='tight')
-    fig.savefig('./reward_ablation.png', dpi=300, bbox_inches='tight')
+    fig.savefig(_out('reward_ablation.pdf'), dpi=300, bbox_inches='tight')
+    fig.savefig(_out('reward_ablation.png'), dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
 def plot_demand(
-    xml_ped_path: str = "./simulation/original_pedtrips.xml",
-    xml_veh_path: str = "./simulation/original_vehtrips.xml",
+    xml_ped_path: str = None,
+    xml_veh_path: str = None,
     bin_width: int = 60,
-    figsize: tuple[int, int] = (14, 3.5),):
+    figsize: tuple[int, int] = (14, 2.5),):
 
     """
     Produce side-by-side demand plots:
@@ -1282,6 +1325,10 @@ def plot_demand(
     (a) Pedestrians
     (b) Vehicles
     """
+    if xml_ped_path is None:
+        xml_ped_path = _proj('simulation', 'original_pedtrips.xml')
+    if xml_veh_path is None:
+        xml_veh_path = _proj('simulation', 'original_vehtrips.xml')
 
     def _extract_depart_times(xml_path: str | Path, tag: str):
         departs = []
@@ -1335,18 +1382,19 @@ def plot_demand(
         ax.set_title(title, fontweight="bold", color=label_col, fontsize=fs)
         ax.set_xlabel("Time-step (s)",    color=label_col, fontsize=fs)
         if ax is axes[0]:
-            ax.set_ylabel("No. of Departures", color=label_col, fontsize=fs, fontweight='bold')
+            ax.set_ylabel("# Departures", color=label_col, fontsize=fs, fontweight='bold',
+                         labelpad=8, y=0.45)
         else:
             ax.set_ylabel("")
 
         # ticks
         ax.tick_params(colors=gray_tick, labelsize=fs)
         if ax is axes[0]:
-            ax.set_yticks([20, 30, 40, 50, 60])
-            ax.set_ylim(19, 61)
+            ax.set_yticks([20, 30, 40, 50])
+            ax.set_ylim(20, 58)
         else:
-            ax.set_yticks([0, 2, 4, 6, 8])
-            ax.set_ylim(-1, 9)
+            ax.set_yticks([0, 2, 4, 6])
+            ax.set_ylim(0, 7)
 
         # X-axis ticks 0-35 with x10^2 offset
         xticks = np.arange(0, 3501, 500)
@@ -1354,7 +1402,7 @@ def plot_demand(
         ax.set_xticklabels([f"{t // 100}" for t in xticks])
         ax.annotate(
             r"$\times10^{2}$",
-            xy=(1.03, -0.03),
+            xy=(1.01, -0.03),
             xycoords="axes fraction",
             ha="left",
             va="center",
@@ -1374,15 +1422,200 @@ def plot_demand(
     fig.subplots_adjust(wspace=0.08)
     plt.tight_layout()
 
-    plt.savefig("./demand.pdf", dpi=300, bbox_inches="tight", pad_inches=0.1)
+    plt.savefig(_out("demand.pdf"), dpi=300, bbox_inches="tight", pad_inches=0.2)
     plt.close()
+
+
+def plot_pedestrian_flows(
+    net_file: str = None,
+    xml_path: str = None,
+    bg_path: str = None,
+    flow_threshold: int = 3,
+    output_prefix: str = None,
+):
+    """
+    Pedestrian OD flow visualization overlaid on building outlines.
+    Uses sumolib for network-based centroid computation.
+    """
+    if net_file is None:
+        net_file = _proj('simulation', 'Craver_traffic_lights_wide.net.xml')
+    if xml_path is None:
+        xml_path = _proj('simulation', 'original_pedtrips.xml')
+    if bg_path is None:
+        bg_path = _proj('images', 'outlines.png')
+    if output_prefix is None:
+        output_prefix = _out('pedestrian_flows')
+    # --- TAZ mapping: raw name → (label, edge IDs) ---
+    TAZ_MAP = {
+        'University_Recreation_Center':         ('Z1',  ['E0']),
+        '1':                                    ('Z2',  ['1050677005#1', '1054116928#2']),
+        '2':                                    ('Z3',  ['1054116932#1']),
+        'Student_Union':                        ('Z4',  ['E1']),
+        '3':                                    ('Z5',  ['1058666218', '1054121751#0']),
+        'Woodward':                             ('Z6',  ['E2']),
+        'College_of_Education':                 ('Z7',  ['E3']),
+        'College_of_Health_and_Human_Services': ('Z8',  ['E4']),
+        'Burson':                               ('Z9',  ['E7']),
+        'Cameron':                              ('Z10', ['1060112727#1']),
+        'Auxiliary_Services':                   ('Z11', ['1060166235#5.41']),
+        '4':                                    ('Z12', ['1098062400', '1050677007#1',
+                                                          '1051046791#2', '1098062411#0']),
+        'McMillan_Greenhouse':                  ('Z13', ['E10']),
+        '5':                                    ('Z14', ['1060112787#5', '1051046792#2']),
+    }
+
+    COLORS = {
+        'Z1': '#17BECF', 'Z2': '#F0874A', 'Z3': '#E74C6F', 'Z4': '#2E86C1',
+        'Z5': '#D770AD', 'Z6': '#F5B041', 'Z7': '#2ECC71', 'Z8': '#E04848',
+        'Z9': '#9B59B6', 'Z10': '#E8ECF0', 'Z11': '#A0522D', 'Z12': '#1ABC9C',
+        'Z13': '#82C944', 'Z14': '#E84393',
+    }
+
+    dpi = 300
+
+    # --- Load network & compute TAZ centroids ---
+    net = sumolib.net.readNet(net_file)
+    bbox = net.getBoundary()
+
+    centroids = {}
+    for trip_name, (label, edges) in TAZ_MAP.items():
+        pts = []
+        for eid in edges:
+            try:
+                pts.extend(net.getEdge(eid).getShape())
+            except Exception:
+                pass
+        if pts:
+            centroids[label] = (np.mean([p[0] for p in pts]),
+                                np.mean([p[1] for p in pts]))
+
+    # Nudge Z5 centroid slightly south (lower y in network coords)
+    if 'Z5' in centroids:
+        cx, cy = centroids['Z5']
+        centroids['Z5'] = (cx, cy + 12)
+
+    # --- Parse OD flows ---
+    trip_to_label = {k: v[0] for k, v in TAZ_MAP.items()}
+    tree = ET.parse(xml_path)
+    od = defaultdict(int)
+    for person in tree.getroot().findall('person'):
+        w = person.find('walk')
+        if w is not None:
+            ft = trip_to_label.get(w.get('fromTaz'))
+            tt = trip_to_label.get(w.get('toTaz'))
+            if ft and tt and ft != tt:
+                od[(ft, tt)] += 1
+    max_count = max(od.values()) if od else 1
+
+    # --- Load background ---
+    bg = mpimg.imread(bg_path)
+    img_h, img_w = bg.shape[:2]
+
+    # Map network coords → image pixels
+    sx = img_w / (bbox[2] - bbox[0])
+    sy = img_h / (bbox[3] - bbox[1])
+
+    def net_to_px(x, y):
+        return (x - bbox[0]) * sx, img_h - (y - bbox[1]) * sy
+
+    # --- Build figure ---
+    PAD_X, PAD_Y = 0, 0
+    pad_l, pad_r, pad_t, pad_b = 0.01, 0.01, 0.01, 0.01
+    inner_w = (img_w + 2 * PAD_X) / dpi
+    inner_h = (img_h + 2 * PAD_Y) / dpi
+    fig_w = inner_w + pad_l + pad_r
+    fig_h = inner_h + pad_t + pad_b
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+    fig.patch.set_facecolor('white')
+    fig.subplots_adjust(left=pad_l / fig_w, right=1 - pad_r / fig_w,
+                        bottom=pad_b / fig_h, top=1 - pad_t / fig_h)
+
+    ax.imshow(bg, extent=[0, img_w, 0, img_h], aspect='auto', zorder=0)
+
+    # Dim background for contrast
+    ax.imshow(np.ones((2, 2, 4)) * [1, 1, 1, 0.25],
+              extent=[0, img_w, 0, img_h], aspect='auto', zorder=1)
+
+    # --- Draw OD flow arcs (low counts first) ---
+    for (src, dst), count in sorted(od.items(), key=lambda x: x[1]):
+        if src not in centroids or dst not in centroids or count < flow_threshold:
+            continue
+        sx_, sy_ = net_to_px(*centroids[src])
+        dx_, dy_ = net_to_px(*centroids[dst])
+        col = COLORS.get(src, '#AAAAAA')
+        frac = count / max_count
+        lw = 0.8 + 6.5 * frac
+        alpha = 0.85
+        # Tighter arc for Z1<->Z12
+        if {src, dst} == {'Z6', 'Z11'}:
+            rad = 0.18
+        elif {src, dst} == {'Z6', 'Z9'}:
+            rad = 0.16
+        elif {src, dst} == {'Z5', 'Z10'}:
+            rad = 0.12
+        elif {src, dst} in ({'Z1', 'Z12'}, {'Z4', 'Z12'}):
+            rad = 0.12
+        elif {src, dst} == {'Z6', 'Z14'}:
+            rad = 0.08
+        else:
+            rad = 0.20
+        ax.annotate(
+            "", xy=(dx_, dy_), xytext=(sx_, sy_),
+            arrowprops=dict(
+                arrowstyle="-",
+                color=col, lw=lw, alpha=alpha,
+                connectionstyle=f"arc3,rad={rad}"),
+            zorder=3 + int(frac * 10))
+
+    # --- Draw TAZ markers and labels ---
+    for label, (nx_, ny_) in centroids.items():
+        ix, iy = net_to_px(nx_, ny_)
+        col = COLORS.get(label, '#AAAAAA')
+
+        # Outer glow
+        ax.scatter(ix, iy, s=198, c=col, alpha=0.35, edgecolors='none', zorder=16)
+        # Main dot
+        ax.scatter(ix, iy, s=99, c=col, edgecolors='white', lw=1.5, zorder=17)
+
+        # Label with stroke outline
+        if label == 'Z5':
+            xt, ha_, va_ = (-10, -4), 'right', 'top'
+        elif label == 'Z6':
+            xt, ha_, va_ = (-10, -6), 'center', 'top'
+        elif label == 'Z7':
+            xt, ha_, va_ = (-8, 8), 'center', 'bottom'
+        elif label == 'Z8':
+            xt, ha_, va_ = (8, 8), 'center', 'bottom'
+        elif label == 'Z10':
+            xt, ha_, va_ = (-4, 8), 'center', 'bottom'
+        elif label == 'Z13':
+            xt, ha_, va_ = (-10, 8), 'center', 'bottom'
+        elif label == 'Z14':
+            xt, ha_, va_ = (-6, 8), 'center', 'bottom'
+        else:
+            xt, ha_, va_ = (0, 8), 'center', 'bottom'
+        ax.annotate(
+            label, xy=(ix, iy), fontsize=9, fontweight='bold',
+            ha=ha_, va=va_, xytext=xt, textcoords='offset points',
+            color='white', zorder=20,
+            path_effects=[pe.withStroke(linewidth=2.0, foreground='black')])
+
+    ax.set_xlim(-PAD_X, img_w + PAD_X)
+    ax.set_ylim(-PAD_Y, img_h + PAD_Y)
+    ax.set_axis_off()
+
+    # --- Save ---
+    fig.savefig(f"{output_prefix}.png", dpi=dpi, bbox_inches='tight',
+                pad_inches=0.02, facecolor='white', transparent=False)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
     run_dir = "readout_32/May09_11-34-05"
     eval_dir = "eval_May10_16-16-52"
     policy = "policy_at_7603200"
-    base = f"./runs/{run_dir}/results/{eval_dir}"
+    base = _proj('runs', run_dir, 'results', eval_dir)
 
     plot_design_and_control_results(
         design_unsig_path=f"{base}/{policy}_unsignalized.json",
@@ -1393,29 +1626,38 @@ if __name__ == "__main__":
     )
 
     rewards_results_plot(
-        combined_csv_codesign="./runs/combined_rewards_codesign.csv",
-        combined_csv_control="./runs/combined_rewards_control_only.csv",
-        codesign_added="./runs/readout_32/May09_11-34-05/results/codesign_added.json",
-        separate_added="./runs/first_design_then_control/May11_10-18-09/results/separate_added.json",
+        combined_csv_codesign=_proj('runs', 'combined_rewards_codesign.csv'),
+        combined_csv_control=_proj('runs', 'combined_rewards_control_only.csv'),
+        codesign_added=_proj('runs', 'readout_32', 'May09_11-34-05', 'results', 'codesign_added.json'),
+        separate_added=_proj('runs', 'first_design_then_control', 'May11_10-18-09', 'results', 'separate_added.json'),
         data_type="average",
     )
 
     plot_graphs_and_gmm(
-        graph_a_path=f'./runs/{run_dir}/graph_iterations/graph_i_0_data.pkl',
-        graph_b_path=f'./runs/{run_dir}/graph_iterations/graph_i_eval_final_data.pkl',
-        gmm_path=f'./runs/{run_dir}/gmm_iterations/gmm_i_eval_final_b0_data.pkl',
+        graph_a_path=_proj('runs', run_dir, 'graph_iterations', 'graph_i_0_data.pkl'),
+        graph_b_path=_proj('runs', run_dir, 'graph_iterations', 'graph_i_eval_final_data.pkl'),
+        gmm_path=_proj('runs', run_dir, 'gmm_iterations', 'gmm_i_eval_final_b0_data.pkl'),
     )
 
     plot_graphs_and_gmm_v2(
-        graph_a_path=f'./runs/{run_dir}/graph_iterations/graph_i_0_data.pkl',
-        graph_b_path=f'./runs/{run_dir}/graph_iterations/graph_i_eval_final_data.pkl',
-        gmm_path=f'./runs/{run_dir}/gmm_iterations/gmm_i_eval_final_b0_data.pkl',
+        graph_a_path=_proj('runs', run_dir, 'graph_iterations', 'graph_i_0_data.pkl'),
+        graph_b_path=_proj('runs', run_dir, 'graph_iterations', 'graph_i_eval_final_data.pkl'),
+        gmm_path=_proj('runs', run_dir, 'gmm_iterations', 'gmm_i_eval_final_b0_data.pkl'),
     )
 
     reward_ablation_plot(
-        mwaq_path='./ablation/mwaq.json',
-        mwaq_linear_path='./ablation/mwaq_linear.json',
-        mwaq_exponential_path='./ablation/mwaq_exponential.json',
+        mwaq_path=_proj('ablation', 'mwaq.json'),
+        mwaq_linear_path=_proj('ablation', 'mwaq_linear.json'),
+        mwaq_exponential_path=_proj('ablation', 'mwaq_exponential.json'),
     )
 
     plot_demand()
+
+    plot_pedestrian_flows(
+        bg_path=_proj('images', 'outlines.png'),
+        output_prefix=_out('pedestrian_flows'),
+    )
+    plot_pedestrian_flows(
+        bg_path=_proj('images', 'No_Veh_No_Ped_cropped.png'),
+        output_prefix=_out('pedestrian_flows_aerial'),
+    )
