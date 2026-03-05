@@ -14,7 +14,25 @@ results
 .ipynb_checkpoints/
 
 # TensorBoard runs
-runs/
+runs/*
+!runs/baselines_experiment/
+runs/baselines_experiment/*
+!runs/baselines_experiment/baseline_results.json
+!runs/baselines_experiment/rl_control_baseline/
+runs/baselines_experiment/rl_control_baseline/*
+!runs/baselines_experiment/rl_control_baseline/rl_control_baseline_results.json
+!runs/readout_32/
+runs/readout_32/*
+!runs/readout_32/May09_11-34-05/
+runs/readout_32/May09_11-34-05/*
+!runs/readout_32/May09_11-34-05/saved_policies/
+runs/readout_32/May09_11-34-05/saved_policies/*
+!runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth
+!runs/readout_32/May09_11-34-05/results/
+runs/readout_32/May09_11-34-05/results/*
+!runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/
+runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/*
+!runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/*.json
 
 ./wandb
 wandb/

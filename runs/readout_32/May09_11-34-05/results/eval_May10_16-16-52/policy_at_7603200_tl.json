@@ -1,0 +1,1122 @@
+{
+    "0.5": {
+        "0": {
+            "SEED": 604242,
+            "total_ped_arrival_time": 4350.0,
+            "average_arrival_time_per_ped": 77.67857004145411,
+            "total_veh_waiting_time": 231.0,
+            "total_ped_waiting_time": 990.0,
+            "veh_avg_waiting_time": 25.666666666666668,
+            "ped_avg_waiting_time": 6.827586206896552,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 939448,
+            "total_ped_arrival_time": 4586.0,
+            "average_arrival_time_per_ped": 84.92592435322362,
+            "total_veh_waiting_time": 203.0,
+            "total_ped_waiting_time": 930.0,
+            "veh_avg_waiting_time": 20.3,
+            "ped_avg_waiting_time": 5.535714285714286,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 250742,
+            "total_ped_arrival_time": 4523.0,
+            "average_arrival_time_per_ped": 74.14753976807312,
+            "total_veh_waiting_time": 221.0,
+            "total_ped_waiting_time": 919.0,
+            "veh_avg_waiting_time": 24.555555555555557,
+            "ped_avg_waiting_time": 5.603658536585366,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 343680,
+            "total_ped_arrival_time": 4620.0,
+            "average_arrival_time_per_ped": 75.7377036764311,
+            "total_veh_waiting_time": 221.0,
+            "total_ped_waiting_time": 880.0,
+            "veh_avg_waiting_time": 24.555555555555557,
+            "ped_avg_waiting_time": 5.534591194968553,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 232076,
+            "total_ped_arrival_time": 4706.0,
+            "average_arrival_time_per_ped": 81.13792963555294,
+            "total_veh_waiting_time": 237.0,
+            "total_ped_waiting_time": 1002.0,
+            "veh_avg_waiting_time": 26.333333333333332,
+            "ped_avg_waiting_time": 6.910344827586207,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 180357,
+            "total_ped_arrival_time": 4676.0,
+            "average_arrival_time_per_ped": 79.25423594484346,
+            "total_veh_waiting_time": 237.0,
+            "total_ped_waiting_time": 1017.0,
+            "veh_avg_waiting_time": 26.333333333333332,
+            "ped_avg_waiting_time": 6.918367346938775,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 897112,
+            "total_ped_arrival_time": 4620.0,
+            "average_arrival_time_per_ped": 75.7377036764311,
+            "total_veh_waiting_time": 221.0,
+            "total_ped_waiting_time": 880.0,
+            "veh_avg_waiting_time": 24.555555555555557,
+            "ped_avg_waiting_time": 5.534591194968553,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 796354,
+            "total_ped_arrival_time": 4706.0,
+            "average_arrival_time_per_ped": 81.13792963555294,
+            "total_veh_waiting_time": 237.0,
+            "total_ped_waiting_time": 1002.0,
+            "veh_avg_waiting_time": 26.333333333333332,
+            "ped_avg_waiting_time": 6.910344827586207,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 554658,
+            "total_ped_arrival_time": 4523.0,
+            "average_arrival_time_per_ped": 74.14753976807312,
+            "total_veh_waiting_time": 221.0,
+            "total_ped_waiting_time": 919.0,
+            "veh_avg_waiting_time": 24.555555555555557,
+            "ped_avg_waiting_time": 5.603658536585366,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 197650,
+            "total_ped_arrival_time": 4586.0,
+            "average_arrival_time_per_ped": 84.92592435322362,
+            "total_veh_waiting_time": 203.0,
+            "total_ped_waiting_time": 930.0,
+            "veh_avg_waiting_time": 20.3,
+            "ped_avg_waiting_time": 5.535714285714286,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "0.75": {
+        "0": {
+            "SEED": 135026,
+            "total_ped_arrival_time": 5726.0,
+            "average_arrival_time_per_ped": 75.34210427181442,
+            "total_veh_waiting_time": 246.0,
+            "total_ped_waiting_time": 1299.0,
+            "veh_avg_waiting_time": 15.375,
+            "ped_avg_waiting_time": 5.094117647058823,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 738828,
+            "total_ped_arrival_time": 5525.0,
+            "average_arrival_time_per_ped": 71.75324582138641,
+            "total_veh_waiting_time": 292.0,
+            "total_ped_waiting_time": 1444.0,
+            "veh_avg_waiting_time": 19.466666666666665,
+            "ped_avg_waiting_time": 6.251082251082251,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 105636,
+            "total_ped_arrival_time": 5656.0,
+            "average_arrival_time_per_ped": 73.45454450059033,
+            "total_veh_waiting_time": 292.0,
+            "total_ped_waiting_time": 1441.0,
+            "veh_avg_waiting_time": 19.466666666666665,
+            "ped_avg_waiting_time": 6.348017621145375,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 555364,
+            "total_ped_arrival_time": 5937.0,
+            "average_arrival_time_per_ped": 76.11538363954637,
+            "total_veh_waiting_time": 269.0,
+            "total_ped_waiting_time": 1438.0,
+            "veh_avg_waiting_time": 19.214285714285715,
+            "ped_avg_waiting_time": 6.657407407407407,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 274492,
+            "total_ped_arrival_time": 5809.0,
+            "average_arrival_time_per_ped": 76.43420952060251,
+            "total_veh_waiting_time": 269.0,
+            "total_ped_waiting_time": 1374.0,
+            "veh_avg_waiting_time": 19.214285714285715,
+            "ped_avg_waiting_time": 6.542857142857143,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 183477,
+            "total_ped_arrival_time": 5726.0,
+            "average_arrival_time_per_ped": 75.34210427181442,
+            "total_veh_waiting_time": 246.0,
+            "total_ped_waiting_time": 1299.0,
+            "veh_avg_waiting_time": 15.375,
+            "ped_avg_waiting_time": 5.094117647058823,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 667726,
+            "total_ped_arrival_time": 5550.0,
+            "average_arrival_time_per_ped": 69.37499913281252,
+            "total_veh_waiting_time": 256.0,
+            "total_ped_waiting_time": 1453.0,
+            "veh_avg_waiting_time": 17.066666666666666,
+            "ped_avg_waiting_time": 6.236051502145923,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 58194,
+            "total_ped_arrival_time": 5435.0,
+            "average_arrival_time_per_ped": 65.4819269219045,
+            "total_veh_waiting_time": 256.0,
+            "total_ped_waiting_time": 1300.0,
+            "veh_avg_waiting_time": 17.066666666666666,
+            "ped_avg_waiting_time": 5.371900826446281,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 890029,
+            "total_ped_arrival_time": 5459.0,
+            "average_arrival_time_per_ped": 67.39506089635728,
+            "total_veh_waiting_time": 256.0,
+            "total_ped_waiting_time": 1258.0,
+            "veh_avg_waiting_time": 17.066666666666666,
+            "ped_avg_waiting_time": 5.330508474576271,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 854106,
+            "total_ped_arrival_time": 5800.0,
+            "average_arrival_time_per_ped": 74.35897340565418,
+            "total_veh_waiting_time": 269.0,
+            "total_ped_waiting_time": 1439.0,
+            "veh_avg_waiting_time": 19.214285714285715,
+            "ped_avg_waiting_time": 6.452914798206278,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "1.0": {
+        "0": {
+            "SEED": 839601,
+            "total_ped_arrival_time": 6863.0,
+            "average_arrival_time_per_ped": 72.2421045027147,
+            "total_veh_waiting_time": 400.0,
+            "total_ped_waiting_time": 1664.0,
+            "veh_avg_waiting_time": 21.05263157894737,
+            "ped_avg_waiting_time": 5.92170818505338,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 683834,
+            "total_ped_arrival_time": 7108.0,
+            "average_arrival_time_per_ped": 75.61702047215935,
+            "total_veh_waiting_time": 357.0,
+            "total_ped_waiting_time": 1505.0,
+            "veh_avg_waiting_time": 19.833333333333332,
+            "ped_avg_waiting_time": 5.452898550724638,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 857646,
+            "total_ped_arrival_time": 7108.0,
+            "average_arrival_time_per_ped": 75.61702047215935,
+            "total_veh_waiting_time": 357.0,
+            "total_ped_waiting_time": 1505.0,
+            "veh_avg_waiting_time": 19.833333333333332,
+            "ped_avg_waiting_time": 5.452898550724638,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 613071,
+            "total_ped_arrival_time": 7324.0,
+            "average_arrival_time_per_ped": 70.42307624593197,
+            "total_veh_waiting_time": 476.0,
+            "total_ped_waiting_time": 1595.0,
+            "veh_avg_waiting_time": 20.695652173913043,
+            "ped_avg_waiting_time": 5.388513513513513,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 138966,
+            "total_ped_arrival_time": 7279.0,
+            "average_arrival_time_per_ped": 71.36274439840447,
+            "total_veh_waiting_time": 446.0,
+            "total_ped_waiting_time": 1752.0,
+            "veh_avg_waiting_time": 20.272727272727273,
+            "ped_avg_waiting_time": 6.020618556701031,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 821477,
+            "total_ped_arrival_time": 7279.0,
+            "average_arrival_time_per_ped": 71.36274439840447,
+            "total_veh_waiting_time": 446.0,
+            "total_ped_waiting_time": 1752.0,
+            "veh_avg_waiting_time": 20.272727272727273,
+            "ped_avg_waiting_time": 6.020618556701031,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 856215,
+            "total_ped_arrival_time": 7033.0,
+            "average_arrival_time_per_ped": 70.32999929670001,
+            "total_veh_waiting_time": 476.0,
+            "total_ped_waiting_time": 1707.0,
+            "veh_avg_waiting_time": 21.636363636363637,
+            "ped_avg_waiting_time": 5.886206896551724,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 540516,
+            "total_ped_arrival_time": 7108.0,
+            "average_arrival_time_per_ped": 75.61702047215935,
+            "total_veh_waiting_time": 357.0,
+            "total_ped_waiting_time": 1505.0,
+            "veh_avg_waiting_time": 19.833333333333332,
+            "ped_avg_waiting_time": 5.452898550724638,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 382865,
+            "total_ped_arrival_time": 7324.0,
+            "average_arrival_time_per_ped": 70.42307624593197,
+            "total_veh_waiting_time": 476.0,
+            "total_ped_waiting_time": 1595.0,
+            "veh_avg_waiting_time": 20.695652173913043,
+            "ped_avg_waiting_time": 5.388513513513513,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 97915,
+            "total_ped_arrival_time": 7361.0,
+            "average_arrival_time_per_ped": 69.44339557128872,
+            "total_veh_waiting_time": 506.0,
+            "total_ped_waiting_time": 1674.0,
+            "veh_avg_waiting_time": 22.0,
+            "ped_avg_waiting_time": 5.543046357615894,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "1.25": {
+        "0": {
+            "SEED": 848981,
+            "total_ped_arrival_time": 8005.0,
+            "average_arrival_time_per_ped": 70.84070733769286,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 2026.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 6.272445820433436,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 645657,
+            "total_ped_arrival_time": 8005.0,
+            "average_arrival_time_per_ped": 70.84070733769286,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 2026.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 6.272445820433436,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 437561,
+            "total_ped_arrival_time": 7873.0,
+            "average_arrival_time_per_ped": 70.29464222951212,
+            "total_veh_waiting_time": 620.0,
+            "total_ped_waiting_time": 2004.0,
+            "veh_avg_waiting_time": 26.956521739130434,
+            "ped_avg_waiting_time": 6.204334365325077,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 628483,
+            "total_ped_arrival_time": 7592.0,
+            "average_arrival_time_per_ped": 66.59649064389043,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 1914.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 5.944099378881988,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 219595,
+            "total_ped_arrival_time": 7151.0,
+            "average_arrival_time_per_ped": 72.96938701051646,
+            "total_veh_waiting_time": 509.0,
+            "total_ped_waiting_time": 1950.0,
+            "veh_avg_waiting_time": 22.130434782608695,
+            "ped_avg_waiting_time": 6.09375,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 915282,
+            "total_ped_arrival_time": 7592.0,
+            "average_arrival_time_per_ped": 66.59649064389043,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 1914.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 5.944099378881988,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 830659,
+            "total_ped_arrival_time": 8005.0,
+            "average_arrival_time_per_ped": 70.84070733769286,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 2026.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 6.272445820433436,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 913453,
+            "total_ped_arrival_time": 7592.0,
+            "average_arrival_time_per_ped": 66.59649064389043,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 1914.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 5.944099378881988,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 196987,
+            "total_ped_arrival_time": 8005.0,
+            "average_arrival_time_per_ped": 70.84070733769286,
+            "total_veh_waiting_time": 549.0,
+            "total_ped_waiting_time": 2026.0,
+            "veh_avg_waiting_time": 23.869565217391305,
+            "ped_avg_waiting_time": 6.272445820433436,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 378628,
+            "total_ped_arrival_time": 8249.0,
+            "average_arrival_time_per_ped": 74.99090840917356,
+            "total_veh_waiting_time": 601.0,
+            "total_ped_waiting_time": 1908.0,
+            "veh_avg_waiting_time": 26.130434782608695,
+            "ped_avg_waiting_time": 5.888888888888889,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "1.5": {
+        "0": {
+            "SEED": 173301,
+            "total_ped_arrival_time": 8570.0,
+            "average_arrival_time_per_ped": 73.87930970793698,
+            "total_veh_waiting_time": 939.0,
+            "total_ped_waiting_time": 2065.0,
+            "veh_avg_waiting_time": 40.82608695652174,
+            "ped_avg_waiting_time": 6.393188854489164,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 314703,
+            "total_ped_arrival_time": 8069.0,
+            "average_arrival_time_per_ped": 68.38135535270038,
+            "total_veh_waiting_time": 855.0,
+            "total_ped_waiting_time": 2173.0,
+            "veh_avg_waiting_time": 37.17391304347826,
+            "ped_avg_waiting_time": 6.727554179566564,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 353307,
+            "total_ped_arrival_time": 7199.0,
+            "average_arrival_time_per_ped": 74.98958255219185,
+            "total_veh_waiting_time": 818.0,
+            "total_ped_waiting_time": 2030.0,
+            "veh_avg_waiting_time": 35.56521739130435,
+            "ped_avg_waiting_time": 6.34375,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 429730,
+            "total_ped_arrival_time": 7199.0,
+            "average_arrival_time_per_ped": 74.98958255219185,
+            "total_veh_waiting_time": 818.0,
+            "total_ped_waiting_time": 2030.0,
+            "veh_avg_waiting_time": 35.56521739130435,
+            "ped_avg_waiting_time": 6.34375,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 711920,
+            "total_ped_arrival_time": 8312.0,
+            "average_arrival_time_per_ped": 71.6551717960761,
+            "total_veh_waiting_time": 939.0,
+            "total_ped_waiting_time": 2082.0,
+            "veh_avg_waiting_time": 40.82608695652174,
+            "ped_avg_waiting_time": 6.445820433436532,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 647731,
+            "total_ped_arrival_time": 8312.0,
+            "average_arrival_time_per_ped": 71.6551717960761,
+            "total_veh_waiting_time": 939.0,
+            "total_ped_waiting_time": 2082.0,
+            "veh_avg_waiting_time": 40.82608695652174,
+            "ped_avg_waiting_time": 6.445820433436532,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 455103,
+            "total_ped_arrival_time": 7738.0,
+            "average_arrival_time_per_ped": 65.02520953760329,
+            "total_veh_waiting_time": 855.0,
+            "total_ped_waiting_time": 2006.0,
+            "veh_avg_waiting_time": 37.17391304347826,
+            "ped_avg_waiting_time": 6.229813664596273,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 464513,
+            "total_ped_arrival_time": 7220.0,
+            "average_arrival_time_per_ped": 72.92929219263341,
+            "total_veh_waiting_time": 808.0,
+            "total_ped_waiting_time": 2054.0,
+            "veh_avg_waiting_time": 35.130434782608695,
+            "ped_avg_waiting_time": 6.398753894080997,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 19072,
+            "total_ped_arrival_time": 7738.0,
+            "average_arrival_time_per_ped": 65.02520953760329,
+            "total_veh_waiting_time": 855.0,
+            "total_ped_waiting_time": 2006.0,
+            "veh_avg_waiting_time": 37.17391304347826,
+            "ped_avg_waiting_time": 6.229813664596273,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 343089,
+            "total_ped_arrival_time": 8333.0,
+            "average_arrival_time_per_ped": 70.61864346933353,
+            "total_veh_waiting_time": 939.0,
+            "total_ped_waiting_time": 2120.0,
+            "veh_avg_waiting_time": 40.82608695652174,
+            "ped_avg_waiting_time": 6.563467492260062,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "1.75": {
+        "0": {
+            "SEED": 127582,
+            "total_ped_arrival_time": 8579.0,
+            "average_arrival_time_per_ped": 73.95689591416469,
+            "total_veh_waiting_time": 1120.0,
+            "total_ped_waiting_time": 2334.0,
+            "veh_avg_waiting_time": 48.69565217391305,
+            "ped_avg_waiting_time": 7.203703703703703,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 472334,
+            "total_ped_arrival_time": 7464.0,
+            "average_arrival_time_per_ped": 76.94845281496441,
+            "total_veh_waiting_time": 994.0,
+            "total_ped_waiting_time": 2388.0,
+            "veh_avg_waiting_time": 43.21739130434783,
+            "ped_avg_waiting_time": 7.533123028391167,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 215771,
+            "total_ped_arrival_time": 8006.0,
+            "average_arrival_time_per_ped": 67.2773103590142,
+            "total_veh_waiting_time": 1027.0,
+            "total_ped_waiting_time": 2339.0,
+            "veh_avg_waiting_time": 44.65217391304348,
+            "ped_avg_waiting_time": 7.355345911949685,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 492571,
+            "total_ped_arrival_time": 8579.0,
+            "average_arrival_time_per_ped": 73.95689591416469,
+            "total_veh_waiting_time": 1120.0,
+            "total_ped_waiting_time": 2334.0,
+            "veh_avg_waiting_time": 48.69565217391305,
+            "ped_avg_waiting_time": 7.203703703703703,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 617418,
+            "total_ped_arrival_time": 8420.0,
+            "average_arrival_time_per_ped": 71.96581135071956,
+            "total_veh_waiting_time": 1120.0,
+            "total_ped_waiting_time": 2379.0,
+            "veh_avg_waiting_time": 48.69565217391305,
+            "ped_avg_waiting_time": 7.365325077399381,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 301540,
+            "total_ped_arrival_time": 8006.0,
+            "average_arrival_time_per_ped": 67.2773103590142,
+            "total_veh_waiting_time": 1027.0,
+            "total_ped_waiting_time": 2339.0,
+            "veh_avg_waiting_time": 44.65217391304348,
+            "ped_avg_waiting_time": 7.355345911949685,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 490182,
+            "total_ped_arrival_time": 8420.0,
+            "average_arrival_time_per_ped": 71.96581135071956,
+            "total_veh_waiting_time": 1120.0,
+            "total_ped_waiting_time": 2379.0,
+            "veh_avg_waiting_time": 48.69565217391305,
+            "ped_avg_waiting_time": 7.365325077399381,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 748267,
+            "total_ped_arrival_time": 8618.0,
+            "average_arrival_time_per_ped": 72.42016745865406,
+            "total_veh_waiting_time": 1027.0,
+            "total_ped_waiting_time": 2440.0,
+            "veh_avg_waiting_time": 44.65217391304348,
+            "ped_avg_waiting_time": 7.554179566563468,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 760836,
+            "total_ped_arrival_time": 8579.0,
+            "average_arrival_time_per_ped": 73.95689591416469,
+            "total_veh_waiting_time": 1120.0,
+            "total_ped_waiting_time": 2334.0,
+            "veh_avg_waiting_time": 48.69565217391305,
+            "ped_avg_waiting_time": 7.203703703703703,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 472953,
+            "total_ped_arrival_time": 8006.0,
+            "average_arrival_time_per_ped": 67.2773103590142,
+            "total_veh_waiting_time": 1027.0,
+            "total_ped_waiting_time": 2339.0,
+            "veh_avg_waiting_time": 44.65217391304348,
+            "ped_avg_waiting_time": 7.355345911949685,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "2.0": {
+        "0": {
+            "SEED": 702018,
+            "total_ped_arrival_time": 13572.0,
+            "average_arrival_time_per_ped": 71.43157857141274,
+            "total_veh_waiting_time": 1201.0,
+            "total_ped_waiting_time": 3398.0,
+            "veh_avg_waiting_time": 29.29268292682927,
+            "ped_avg_waiting_time": 5.682274247491639,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 223062,
+            "total_ped_arrival_time": 13664.0,
+            "average_arrival_time_per_ped": 67.31034449600816,
+            "total_veh_waiting_time": 1237.0,
+            "total_ped_waiting_time": 3430.0,
+            "veh_avg_waiting_time": 27.488888888888887,
+            "ped_avg_waiting_time": 5.632183908045977,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 30971,
+            "total_ped_arrival_time": 13376.0,
+            "average_arrival_time_per_ped": 73.49450509068953,
+            "total_veh_waiting_time": 1300.0,
+            "total_ped_waiting_time": 3180.0,
+            "veh_avg_waiting_time": 34.21052631578947,
+            "ped_avg_waiting_time": 5.549738219895288,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 963673,
+            "total_ped_arrival_time": 13070.0,
+            "average_arrival_time_per_ped": 73.4269658796238,
+            "total_veh_waiting_time": 1258.0,
+            "total_ped_waiting_time": 3152.0,
+            "veh_avg_waiting_time": 33.10526315789474,
+            "ped_avg_waiting_time": 5.648745519713262,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 790681,
+            "total_ped_arrival_time": 13530.0,
+            "average_arrival_time_per_ped": 69.38461502879684,
+            "total_veh_waiting_time": 1217.0,
+            "total_ped_waiting_time": 3214.0,
+            "veh_avg_waiting_time": 28.976190476190474,
+            "ped_avg_waiting_time": 5.365609348914858,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 781068,
+            "total_ped_arrival_time": 13530.0,
+            "average_arrival_time_per_ped": 69.38461502879684,
+            "total_veh_waiting_time": 1217.0,
+            "total_ped_waiting_time": 3214.0,
+            "veh_avg_waiting_time": 28.976190476190474,
+            "ped_avg_waiting_time": 5.365609348914858,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 555776,
+            "total_ped_arrival_time": 13664.0,
+            "average_arrival_time_per_ped": 67.31034449600816,
+            "total_veh_waiting_time": 1237.0,
+            "total_ped_waiting_time": 3430.0,
+            "veh_avg_waiting_time": 27.488888888888887,
+            "ped_avg_waiting_time": 5.632183908045977,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 354307,
+            "total_ped_arrival_time": 13422.0,
+            "average_arrival_time_per_ped": 73.74725234204807,
+            "total_veh_waiting_time": 1225.0,
+            "total_ped_waiting_time": 3506.0,
+            "veh_avg_waiting_time": 26.630434782608695,
+            "ped_avg_waiting_time": 5.719412724306689,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 916796,
+            "total_ped_arrival_time": 13530.0,
+            "average_arrival_time_per_ped": 69.38461502879684,
+            "total_veh_waiting_time": 1217.0,
+            "total_ped_waiting_time": 3214.0,
+            "veh_avg_waiting_time": 28.976190476190474,
+            "ped_avg_waiting_time": 5.365609348914858,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 258026,
+            "total_ped_arrival_time": 13820.0,
+            "average_arrival_time_per_ped": 73.5106379068583,
+            "total_veh_waiting_time": 1300.0,
+            "total_ped_waiting_time": 3289.0,
+            "veh_avg_waiting_time": 32.5,
+            "ped_avg_waiting_time": 5.574576271186441,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "2.25": {
+        "0": {
+            "SEED": 349498,
+            "total_ped_arrival_time": 14055.0,
+            "average_arrival_time_per_ped": 74.76063790020937,
+            "total_veh_waiting_time": 1157.0,
+            "total_ped_waiting_time": 2596.0,
+            "veh_avg_waiting_time": 28.21951219512195,
+            "ped_avg_waiting_time": 4.326666666666667,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 549359,
+            "total_ped_arrival_time": 14055.0,
+            "average_arrival_time_per_ped": 74.76063790020937,
+            "total_veh_waiting_time": 1157.0,
+            "total_ped_waiting_time": 2596.0,
+            "veh_avg_waiting_time": 28.21951219512195,
+            "ped_avg_waiting_time": 4.326666666666667,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 170000,
+            "total_ped_arrival_time": 13465.0,
+            "average_arrival_time_per_ped": 72.00534720852755,
+            "total_veh_waiting_time": 1266.0,
+            "total_ped_waiting_time": 3436.0,
+            "veh_avg_waiting_time": 27.52173913043478,
+            "ped_avg_waiting_time": 5.385579937304075,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 168261,
+            "total_ped_arrival_time": 14495.0,
+            "average_arrival_time_per_ped": 69.68749966496395,
+            "total_veh_waiting_time": 1251.0,
+            "total_ped_waiting_time": 3120.0,
+            "veh_avg_waiting_time": 27.195652173913043,
+            "ped_avg_waiting_time": 4.859813084112149,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 233867,
+            "total_ped_arrival_time": 14297.0,
+            "average_arrival_time_per_ped": 66.80841090276444,
+            "total_veh_waiting_time": 1206.0,
+            "total_ped_waiting_time": 3183.0,
+            "veh_avg_waiting_time": 26.217391304347824,
+            "ped_avg_waiting_time": 4.965678627145086,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 317171,
+            "total_ped_arrival_time": 14495.0,
+            "average_arrival_time_per_ped": 69.68749966496395,
+            "total_veh_waiting_time": 1251.0,
+            "total_ped_waiting_time": 3120.0,
+            "veh_avg_waiting_time": 27.195652173913043,
+            "ped_avg_waiting_time": 4.859813084112149,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 318117,
+            "total_ped_arrival_time": 14241.0,
+            "average_arrival_time_per_ped": 65.02739696334523,
+            "total_veh_waiting_time": 1236.0,
+            "total_ped_waiting_time": 3369.0,
+            "veh_avg_waiting_time": 26.869565217391305,
+            "ped_avg_waiting_time": 5.25585023400936,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 970822,
+            "total_ped_arrival_time": 14297.0,
+            "average_arrival_time_per_ped": 66.80841090276444,
+            "total_veh_waiting_time": 1206.0,
+            "total_ped_waiting_time": 3183.0,
+            "veh_avg_waiting_time": 26.217391304347824,
+            "ped_avg_waiting_time": 4.965678627145086,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 246217,
+            "total_ped_arrival_time": 14241.0,
+            "average_arrival_time_per_ped": 65.02739696334523,
+            "total_veh_waiting_time": 1236.0,
+            "total_ped_waiting_time": 3369.0,
+            "veh_avg_waiting_time": 26.869565217391305,
+            "ped_avg_waiting_time": 5.25585023400936,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 528559,
+            "total_ped_arrival_time": 14297.0,
+            "average_arrival_time_per_ped": 66.80841090276444,
+            "total_veh_waiting_time": 1206.0,
+            "total_ped_waiting_time": 3183.0,
+            "veh_avg_waiting_time": 26.217391304347824,
+            "ped_avg_waiting_time": 4.965678627145086,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "2.5": {
+        "0": {
+            "SEED": 193259,
+            "total_ped_arrival_time": 15536.0,
+            "average_arrival_time_per_ped": 71.92592559293553,
+            "total_veh_waiting_time": 1336.0,
+            "total_ped_waiting_time": 3723.0,
+            "veh_avg_waiting_time": 29.043478260869566,
+            "ped_avg_waiting_time": 5.7542503863987635,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 591981,
+            "total_ped_arrival_time": 15620.0,
+            "average_arrival_time_per_ped": 72.65116245278529,
+            "total_veh_waiting_time": 1307.0,
+            "total_ped_waiting_time": 3561.0,
+            "veh_avg_waiting_time": 28.41304347826087,
+            "ped_avg_waiting_time": 5.49537037037037,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 38621,
+            "total_ped_arrival_time": 15620.0,
+            "average_arrival_time_per_ped": 72.65116245278529,
+            "total_veh_waiting_time": 1307.0,
+            "total_ped_waiting_time": 3561.0,
+            "veh_avg_waiting_time": 28.41304347826087,
+            "ped_avg_waiting_time": 5.49537037037037,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 278352,
+            "total_ped_arrival_time": 15536.0,
+            "average_arrival_time_per_ped": 71.92592559293553,
+            "total_veh_waiting_time": 1336.0,
+            "total_ped_waiting_time": 3723.0,
+            "veh_avg_waiting_time": 29.043478260869566,
+            "ped_avg_waiting_time": 5.7542503863987635,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 794162,
+            "total_ped_arrival_time": 15289.0,
+            "average_arrival_time_per_ped": 69.81278506934801,
+            "total_veh_waiting_time": 1346.0,
+            "total_ped_waiting_time": 3823.0,
+            "veh_avg_waiting_time": 29.26086956521739,
+            "ped_avg_waiting_time": 5.908809891808346,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 885751,
+            "total_ped_arrival_time": 14627.0,
+            "average_arrival_time_per_ped": 65.88738709059736,
+            "total_veh_waiting_time": 1256.0,
+            "total_ped_waiting_time": 3747.0,
+            "veh_avg_waiting_time": 27.304347826086957,
+            "ped_avg_waiting_time": 5.845553822152886,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 226468,
+            "total_ped_arrival_time": 15536.0,
+            "average_arrival_time_per_ped": 71.92592559293553,
+            "total_veh_waiting_time": 1336.0,
+            "total_ped_waiting_time": 3723.0,
+            "veh_avg_waiting_time": 29.043478260869566,
+            "ped_avg_waiting_time": 5.7542503863987635,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 972538,
+            "total_ped_arrival_time": 14297.0,
+            "average_arrival_time_per_ped": 64.40090061080676,
+            "total_veh_waiting_time": 1266.0,
+            "total_ped_waiting_time": 3870.0,
+            "veh_avg_waiting_time": 27.52173913043478,
+            "ped_avg_waiting_time": 6.046875,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 350388,
+            "total_ped_arrival_time": 14627.0,
+            "average_arrival_time_per_ped": 65.88738709059736,
+            "total_veh_waiting_time": 1256.0,
+            "total_ped_waiting_time": 3747.0,
+            "veh_avg_waiting_time": 27.304347826086957,
+            "ped_avg_waiting_time": 5.845553822152886,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 632191,
+            "total_ped_arrival_time": 14939.0,
+            "average_arrival_time_per_ped": 67.90454514588843,
+            "total_veh_waiting_time": 1246.0,
+            "total_ped_waiting_time": 3948.0,
+            "veh_avg_waiting_time": 27.08695652173913,
+            "ped_avg_waiting_time": 6.102009273570324,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    },
+    "2.75": {
+        "0": {
+            "SEED": 99638,
+            "total_ped_arrival_time": 15711.0,
+            "average_arrival_time_per_ped": 71.7397256998186,
+            "total_veh_waiting_time": 1281.0,
+            "total_ped_waiting_time": 3522.0,
+            "veh_avg_waiting_time": 27.847826086956523,
+            "ped_avg_waiting_time": 5.435185185185185,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "1": {
+            "SEED": 887343,
+            "total_ped_arrival_time": 15735.0,
+            "average_arrival_time_per_ped": 70.87837805910641,
+            "total_veh_waiting_time": 1237.0,
+            "total_ped_waiting_time": 3678.0,
+            "veh_avg_waiting_time": 26.891304347826086,
+            "ped_avg_waiting_time": 5.684698608964451,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "2": {
+            "SEED": 749179,
+            "total_ped_arrival_time": 15218.0,
+            "average_arrival_time_per_ped": 68.85972819520485,
+            "total_veh_waiting_time": 1273.0,
+            "total_ped_waiting_time": 3798.0,
+            "veh_avg_waiting_time": 27.67391304347826,
+            "ped_avg_waiting_time": 5.87017001545595,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "3": {
+            "SEED": 681535,
+            "total_ped_arrival_time": 15847.0,
+            "average_arrival_time_per_ped": 69.50438566006848,
+            "total_veh_waiting_time": 1159.0,
+            "total_ped_waiting_time": 3641.0,
+            "veh_avg_waiting_time": 25.195652173913043,
+            "ped_avg_waiting_time": 5.6801872074882995,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "4": {
+            "SEED": 749284,
+            "total_ped_arrival_time": 15755.0,
+            "average_arrival_time_per_ped": 70.96846814879069,
+            "total_veh_waiting_time": 1281.0,
+            "total_ped_waiting_time": 3645.0,
+            "veh_avg_waiting_time": 27.847826086956523,
+            "ped_avg_waiting_time": 5.633693972179289,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "5": {
+            "SEED": 891887,
+            "total_ped_arrival_time": 15316.0,
+            "average_arrival_time_per_ped": 69.61818150173553,
+            "total_veh_waiting_time": 1273.0,
+            "total_ped_waiting_time": 3734.0,
+            "veh_avg_waiting_time": 27.67391304347826,
+            "ped_avg_waiting_time": 5.771251931993818,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "6": {
+            "SEED": 534346,
+            "total_ped_arrival_time": 15648.0,
+            "average_arrival_time_per_ped": 69.54666635757037,
+            "total_veh_waiting_time": 1159.0,
+            "total_ped_waiting_time": 3853.0,
+            "veh_avg_waiting_time": 25.195652173913043,
+            "ped_avg_waiting_time": 5.964396284829721,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "7": {
+            "SEED": 927916,
+            "total_ped_arrival_time": 15218.0,
+            "average_arrival_time_per_ped": 68.85972819520485,
+            "total_veh_waiting_time": 1273.0,
+            "total_ped_waiting_time": 3798.0,
+            "veh_avg_waiting_time": 27.67391304347826,
+            "ped_avg_waiting_time": 5.87017001545595,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "8": {
+            "SEED": 307927,
+            "total_ped_arrival_time": 15755.0,
+            "average_arrival_time_per_ped": 70.96846814879069,
+            "total_veh_waiting_time": 1281.0,
+            "total_ped_waiting_time": 3645.0,
+            "veh_avg_waiting_time": 27.847826086956523,
+            "ped_avg_waiting_time": 5.633693972179289,
+            "total_conflicts": 0,
+            "total_switches": 0
+        },
+        "9": {
+            "SEED": 7793,
+            "total_ped_arrival_time": 15847.0,
+            "average_arrival_time_per_ped": 69.50438566006848,
+            "total_veh_waiting_time": 1159.0,
+            "total_ped_waiting_time": 3641.0,
+            "veh_avg_waiting_time": 25.195652173913043,
+            "ped_avg_waiting_time": 5.6801872074882995,
+            "total_conflicts": 0,
+            "total_switches": 0
+        }
+    }
+}

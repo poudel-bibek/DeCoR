@@ -45,7 +45,8 @@ def _out(*parts):
 
 def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
                                      control_tl_path, control_ppo_path,
-                                     in_range_demand_scales):
+                                     in_range_demand_scales,
+                                     design_baselines_path=None):
     """
     2x3 figure combining design and control results.
     Left: Pedestrian Arrival Time, Middle: Pedestrian Wait Time, Right: Vehicle Wait Time.
@@ -63,6 +64,8 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     COLORS = {
         'DeCoR':        '#2D9334',
         'Real-world':   '#E63946',
+        'Uniform':      '#C07A1C',
+        'Random':       '#6B7280',
         'Fixed-time':   '#1f77b4',
         'Unsignalized': '#ff7f0e',
     }
@@ -109,6 +112,29 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         handle = create_gradient_line(ax, scales, values, color, label=label, marker=marker)
         ax.fill_between(scales, values - std, values + std, color=color, alpha=0.15, zorder=5)
         return handle
+
+    def load_design_baselines(path):
+        with open(path, 'r') as f:
+            raw = json.load(f)
+
+        baselines = {}
+        for src_key, label in [('uniform', 'Uniform'), ('random_best20', 'Random')]:
+            if src_key not in raw:
+                continue
+            scales = np.array(sorted(float(scale) for scale in raw[src_key].keys()))
+            baselines[label] = {
+                'avg': (
+                    scales,
+                    np.array([raw[src_key][str(scale)]['mean'] for scale in scales]),
+                    np.array([raw[src_key][str(scale)]['std'] for scale in scales]),
+                ),
+                'tot': (
+                    scales,
+                    np.array([raw[src_key][str(scale)]['total_mean'] for scale in scales]),
+                    np.array([raw[src_key][str(scale)]['total_std'] for scale in scales]),
+                ),
+            }
+        return baselines
 
     # --- Style ---
     mpl.rcParams.update({
@@ -165,6 +191,9 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     x_margin = 0.05 * (x_max - x_min)
     valid_min = min(in_range_demand_scales)
     valid_max = max(in_range_demand_scales)
+    design_baselines = {}
+    if design_baselines_path and os.path.exists(design_baselines_path):
+        design_baselines = load_design_baselines(design_baselines_path)
 
     # --- Common axis setup ---
     for ax in all_panels:
@@ -181,6 +210,9 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     design_paths  = [realworld_unsig_path, design_unsig_path]
     design_labels = ['Real-world', 'DeCoR']
     design_handles = []
+    design_handles_by_label = {}
+    design_avg_upper = []
+    design_tot_upper = []
 
     for path, label in zip(design_paths, design_labels):
         color = COLORS.get(label, 'black')
@@ -189,8 +221,25 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         marker = '*' if 'DeCoR' in label else 'o'
 
         h = plot_series(ax_design_avg, scales, avg_vals, avg_std, color, marker, label=label)
-        design_handles.append(h)
+        design_handles_by_label[label] = h
         plot_series(ax_design_tot, scales, tot_vals / 1000, tot_std / 1000, color, marker)
+        design_avg_upper.append(np.max(avg_vals + avg_std))
+        design_tot_upper.append(np.max((tot_vals + tot_std) / 1000))
+
+    for label in ['Uniform', 'Random']:
+        if label not in design_baselines:
+            continue
+        scales, avg_values, avg_std = design_baselines[label]['avg']
+        _, total_values, total_std = design_baselines[label]['tot']
+        h = plot_series(ax_design_avg, scales, avg_values, avg_std, COLORS[label], 'o', label=label)
+        design_handles_by_label[label] = h
+        plot_series(ax_design_tot, scales, total_values / 1000, total_std / 1000, COLORS[label], 'o')
+        design_avg_upper.append(np.max(avg_values + avg_std))
+        design_tot_upper.append(np.max((total_values + total_std) / 1000))
+
+    design_labels = [label for label in ['Real-world', 'Uniform', 'Random', 'DeCoR']
+                     if label in design_handles_by_label]
+    design_handles = [design_handles_by_label[label] for label in design_labels]
 
     # --- Y-ticks and limits (manual per panel) ---
     def set_ticks(ax, start, stop, step):
@@ -199,8 +248,22 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
         pad = step * 0.15
         ax.set_ylim(ticks[0] - pad, ticks[-1] + pad)
 
-    set_ticks(ax_design_avg, 60, 110, 10)
-    set_ticks(ax_design_tot, 0, 25, 5)
+    def set_ticks_to_cover(ax, lower, upper, step=None, target_ticks=6):
+        if step is None:
+            raw_step = max((upper - lower) / max(target_ticks - 1, 1), 1e-9)
+            magnitude = 10 ** np.floor(np.log10(raw_step))
+            for factor in [1, 2, 2.5, 5, 10]:
+                candidate = factor * magnitude
+                if candidate >= raw_step:
+                    step = candidate
+                    break
+            else:
+                step = 10 * magnitude
+        stop = step * np.ceil(upper / step)
+        set_ticks(ax, lower, stop, step)
+
+    set_ticks_to_cover(ax_design_avg, 60, max(110, max(design_avg_upper)), step=10)
+    set_ticks_to_cover(ax_design_tot, 0, max(25, max(design_tot_upper)), target_ticks=6)
 
     # --- Control results (middle and right columns) ---
     ax_ped_avg.set_title('Pedestrian Wait Time')
@@ -248,9 +311,9 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
 
     # --- Y-axis labels ---
     # Left column (design)
-    fig.text(0.015, 0.74, 'Average (s)', va='center', rotation='vertical',
+    fig.text(0.012, 0.74, 'Average (s)', va='center', rotation='vertical',
              fontsize=fs, fontweight='bold')
-    fig.text(0.015, 0.32, 'Total (×10³ s)', va='center', rotation='vertical',
+    fig.text(0.012, 0.32, 'Total (×10³ s)', va='center', rotation='vertical',
              fontsize=fs, fontweight='bold')
     # Shared label for middle + right columns (control)
     fig.text(0.39, 0.74, 'Average (s)', va='center', rotation='vertical',
@@ -268,7 +331,7 @@ def plot_design_and_control_results(design_unsig_path, realworld_unsig_path,
     }
 
     leg_design  = fig.legend(handles=design_handles, labels=design_labels,
-                             ncol=2, bbox_to_anchor=(0.201, -0.12), **legend_kwargs)
+                             ncol=2, bbox_to_anchor=(0.201, -0.16), **legend_kwargs)
     leg_control = fig.legend(handles=control_handles, labels=control_labels,
                              ncol=3, bbox_to_anchor=(0.712, -0.12), **legend_kwargs)
 
@@ -1623,6 +1686,7 @@ if __name__ == "__main__":
         control_tl_path=f"{base}/{policy}_tl.json",
         control_ppo_path=f"{base}/{policy}_ppo.json",
         in_range_demand_scales=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25],
+        design_baselines_path=_proj('runs', 'baselines_experiment', 'baseline_results.json'),
     )
 
     rewards_results_plot(
