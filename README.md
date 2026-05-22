@@ -4,110 +4,181 @@
 
 ### 📌 Overview
 
-DeCoR is a two-stage reinforcement learning framework that jointly optimizes mid-block crosswalk placement and traffic signal control from pedestrian and vehicle flow observations. On a 750 m real-world corridor, it reduces pedestrian access time while learning adaptive signal timings that lower both pedestrian and vehicle delay.
+DeCoR is a two-stage reinforcement learning framework for co-optimizing mid-block crosswalk placement and adaptive traffic signal control. It uses pedestrian and vehicle flow observations to generate crosswalk layouts, evaluate them in closed-loop traffic simulation, and learn signal timings that reduce delay for both pedestrians and vehicles.
 
 <p align="center">
   <img src="images/system_overview.png" alt="DeCoR system overview" style="width:800px"/>
   <br>
-  <em>DeCoR co-optimizes crosswalk design and signal control through closed-loop traffic simulation.</em>
+  <em>
+  Overview of DeCoR. A design agent proposes mid-block crosswalk layouts, while a control agent learns adaptive signal timings for each layout through closed-loop traffic simulation with pedestrian and vehicle demand.
+  </em>
 </p>
 
 ---
-### 🎯  Reproducing the Results
-The details on setup and testing are given below.
+### 📦 Data, Checkpoints, and Results
 
-####  ⚙️ Setup
+| Artifact | Location | Notes |
+| --- | --- | --- |
+| SUMO corridor assets | `simulation/` | Includes the Craver Road network, original vehicle trips, and original pedestrian trips. |
+| Pretrained policy | `runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth` | Checkpoint used by the default `eval_model_path`. |
+| Paper evaluation JSONs | `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` | Includes DeCoR control, fixed-time, unsignalized, and real-world unsignalized evaluation outputs. |
+| Design baseline JSON | `runs/baselines_experiment/baseline_results.json` | Stored uniform/random design baseline results used by plotting utilities. |
+| README and paper figures | `images/`, `plots/` | Source-controlled visual assets and plotting scripts. Generated `.png`/`.pdf` files are ignored unless explicitly tracked. |
 
-- Install Eclipse SUMO 1.21 for exact reproduction, or [SUMO 1.22.0](https://github.com/eclipse-sumo/sumo/releases/tag/v1_22_0) for a newer supported installation.
-- To verify SUMO is installed and accessible, open terminal and enter:
+---
+### ⚙️ Setup
+
+- Install Eclipse SUMO 1.21 or [SUMO 1.22.0](https://github.com/eclipse-sumo/sumo/releases/tag/v1_22_0). Make sure `sumo`, `sumo-gui`, and `netconvert` are available on your `PATH`.
+- Verify SUMO:
   ```bash
   sumo --version
   ```
-- Install Python version 3.12 and [uv](https://docs.astral.sh/uv/).
-- Go to the code folder and sync the project environment:
-    ```bash
-     uv sync
-     ```
+- Install Python 3.12 and [uv](https://docs.astral.sh/uv/). Python dependencies are defined in `pyproject.toml` and locked in `uv.lock`; `sumolib` and `traci` are pinned to `1.22.0`.
+- Sync the project environment:
+  ```bash
+  uv sync
+  ```
 
-#### 🚀 Training
+---
+### 🚀 Training
 
-__Step 1:__ Complete the setup
+For training, set these values in `config.py`:
 
-__Step 2:__ Make sure config.py file has `evaluate` set to `False`  (set `gui` set to `False` for faster training)
+```python
+"evaluate": False,
+"gui": False,
+```
 
-__Step 3:__ Run the following command
+Then run:
+
 ```bash
 uv run python main.py
 ```
-__Step 4:__  To monitor progress using TensorBoard, open another terminal, go to the code folder and enter the following command:
+
+Training writes a timestamped run folder under `runs/<timestamp>/`, including `config.json`, TensorBoard logs, generated SUMO networks, and policies under `saved_policies/`. If `eval_freq > 0`, training also writes intermediate evaluation JSONs under `runs/<timestamp>/results/train_<timestamp>/`.
+
+To monitor TensorBoard:
+
 ```bash
-uv run tensorboard --logdir=./runs
+uv run tensorboard --logdir runs
 ```
-__Step 5:__  The folder corresponding to the training run will be saved inside `runs/`.
 
-#### 🔍 Evaluation
+On Linux or WSL, if multiprocessing fails because too many files are open, increase the file descriptor limit before training:
 
-__Step 1:__  Make sure config.py file has `evaluate` set to `True` (you can set `gui` to `True` to visually see the simulation)
-
-__Step 2:__  The results will be saved in the corresponding `runs/` subfolder as 4 json files corresponding to:
- - Real-world crosswalk configuration with unsignalized control
- - Crosswalk configuration from the trained design agent with:
-     -  Unsignalized control for mid-block crosswalks
-     -  Traditional fixed-time traffic signal control for mid-block crosswalks
-     -  Trained control agent for mid-block crosswalks
-
-__Step 3:__  At the end of evaluations, a plot file named `design_control_results.pdf` will be saved.
-
-*Unsignalized cases will be visually indicated by all mid-block signals turning green (for both vehicles and pedestrians).
+```bash
+ulimit -n 20000
+```
 
 ---
+### 📈 Evaluation
+
+Set `evaluate=True` in `config.py` and point `eval_model_path` to a saved checkpoint:
+
+```python
+"evaluate": True,
+"eval_model_path": "runs/<run_name>/saved_policies/<checkpoint>.pth",
+```
+
+Then run:
+
+```bash
+uv run python main.py
+```
+
+The active evaluation path in `main.py` evaluates the trained DeCoR policy over the configured demand scales and writes:
+
+```text
+runs/<run_name>/results/eval_<timestamp>/<checkpoint>_ppo.json
+```
+
+The full paper comparison uses four result files: real-world unsignalized, DeCoR unsignalized, DeCoR fixed-time, and DeCoR control. Those paper JSONs are included under `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/`.
 
 ### 📝 Code Structure
-The main implementation is organized as follows:
-```
-├── main.py                # Training and evaluation pipeline orchestrator
-├── config.py              # Configuration and hyperparameter management
-├── utils.py               # General utility functions and helpers
-├── sweep.py               # WandB hyperparameter sweep
-├── images/                # Reference images and figures
-├── plots/
-│    ├── training_plots.py  # Training-time visualization
-│    ├── result_plots.py    # Post-training analysis plots
-├── ppo/
-│    ├── models.py          # Neural network policy architectures
-│    ├── ppo.py             # PPO algorithm implementation
-│    ├── ppo_utils.py       # Memory, normalizers, graph dataset
-├── simulation/
-│    ├── design_env.py      # Higher-level design environment
-│    ├── control_env.py     # Lower-level control environment
-│    ├── worker.py          # Parallel train/eval workers
-│    ├── sim_setup.py       # Traffic light phases and crosswalk definitions
-│    ├── env_utils.py       # Graph visualization and coordinate utilities
-```
-#### Some important parameters that you can change in the config.py file:
 
--   `gui: True`  to run the simulation with GUI.
--   `gpu: True`  to load the policy on GPU. Set to `False` if your system does not have a  GPU (everything should work even without a GPU).
--   `"total_timesteps"`: Total training timesteps, default=20000000.
--   `"max_timesteps"`: Maximum per episode simulation steps, default=360.
--   `"num_processes"`: Number of parallel lower-level (control agent) processes, default=10. Increase/ decrease according to your CPU.
+```text
+├── main.py                  # Training and evaluation entry point
+├── config.py                # Runtime configuration and argument grouping
+├── utils.py                 # Policy IO, demand scaling, result aggregation
+├── pyproject.toml           # uv project metadata and direct dependencies
+├── uv.lock                  # Locked dependency resolution
+├── images/                  # Tracked README and corridor visual assets
+├── plots/
+│   ├── training_plots.py    # Training-era control/design plots and videos
+│   ├── result_plots.py      # Paper result figures and combined plots
+│   └── pedestrian_flow_plot.py
+│                            # Standalone pedestrian flow allocation figure
+├── ppo/
+│   ├── models.py            # Lower MLP policy and higher GAT/GMM policy
+│   ├── ppo.py               # PPO update implementation
+│   └── ppo_utils.py         # Memory, normalizers, graph batching helpers
+├── simulation/
+│   ├── Craver_traffic_lights_wide.net.xml
+│   ├── original_vehtrips.xml
+│   ├── original_pedtrips.xml
+│   ├── design_env.py        # Higher-level crosswalk design environment
+│   ├── control_env.py       # Lower-level TraCI/SUMO control environment
+│   ├── worker.py            # Parallel training/evaluation workers
+│   ├── sim_setup.py         # Phase definitions and lane/crosswalk metadata
+│   └── env_utils.py         # SUMO config, graph, and geometry helpers
+└── runs/
+    └── readout_32/...       # Included checkpoint and paper result artifacts
+```
 
 ---
-#### ⚠️  Debugging
-- If something fails, check the  `netconvert_log.txt`, `sumo_logfile.txt`  and  `sumo_errorlog.txt`  files in the  `runs/`  folder.
+### 🔧 Important Configuration Values
+
+| Key | Default | Notes |
+| --- | ---: | --- |
+| `evaluate` | `True` | Set to `False` for training. |
+| `gui` | `True` | Set to `False` for faster headless SUMO runs. |
+| `gpu` | `True` | Uses CUDA when available; falls back to CPU otherwise. |
+| `total_timesteps` | `15000000` | Total lower-level simulation timesteps for training. |
+| `lower_num_processes` | `10` | Parallel lower-level training workers. Adjust to your CPU. |
+| `lower_max_timesteps` | `360` | Episode horizon, excluding warmup. |
+| `lower_step_length` | `1.0` | SUMO seconds per simulation step. |
+| `lower_action_duration` | `10` | Simulation steps per control action. |
+| `lower_warmup_steps` | `[40, 140]` | Randomized warmup before policy control. |
+| `demand_scale_min/max` | `1.0 / 2.25` | Training demand scale range. |
+| `eval_lower_timesteps` | `450` | Evaluation episode horizon, excluding warmup. |
+| `eval_lower_workers` | `10` | Parallel evaluation workers. |
+| `eval_worker_device` | `"gpu"` | Evaluation policy device preference. |
+| `max_proposals` | `10` | Maximum crosswalk proposals from the design agent. |
+| `min_thickness/max_thickness` | `2.0 / 15.0` | Crosswalk width bounds in meters. |
+| `num_mixtures` | `7` | GMM components for the design policy. |
+
+Evaluation demand scales are `[1.0, 1.25, 1.5, 1.75, 2.0, 2.25]` in range and `[0.5, 0.75, 2.5, 2.75]` out of range.
+
+---
+### ⚠️ Notes and Debugging
+
+- If SUMO commands are not found, make sure the SUMO binaries are on `PATH`; set `SUMO_HOME` if your local SUMO installation requires it.
+- Running with `gui=True` is useful for visual checks but substantially slower than headless SUMO.
+- If a run fails, check `netconvert_log.txt`, `sumo_logfile.txt`, and `sumo_errorlog.txt` in the relevant `runs/` subfolder.
+- Generated scaled trips are written under `simulation/scaled_trips/` and are ignored by Git.
+- Large generated plots and PDFs are ignored by default. Tracked figures are explicitly allowed in `.gitignore`.
+
+---
+### 📄 License
+
+This project is released under the license in `LICENSE`.
 
 ---
 ### 📖 Citation
+
 If you find this work useful in your own research:
-```
-@misc{poudel2025decor,
-  title={DeCoR: Design and Control Co-Optimization for Urban Streets Using Reinforcement Learning},
-  author={Poudel, Bibek and Zhu, Lei and Heaslip, Kevin and Swaminathan, Sai and Li, Weizi},
-  year={2026},
-  note={Preprint},
+
+```bibtex
+@misc{poudel2026decor,
+  title = {DeCoR: Design and Control Co-Optimization for Urban Streets Using Reinforcement Learning},
+  author = {Poudel, Bibek and Zhu, Lei and Heaslip, Kevin and Swaminathan, Sai and Li, Weizi},
+  year = {2026},
+  eprint = {2605.21311},
+  archivePrefix = {arXiv},
+  note = {Preprint}
 }
 ```
 
 ---
 ### 🙏 Acknowledgements
+
 We thank Jakob Erdmann ([@namdre](https://github.com/namdre)) of SUMO for helping with technical issues in simulation.
