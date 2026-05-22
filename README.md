@@ -1,24 +1,32 @@
+## DeCoR: Design and Control Co-Optimization for Urban Streets Using Reinforcement Learning
+
+<a href="https://arxiv.org/pdf/2605.21311"><img src="https://img.shields.io/badge/arXiv--green"></a> <a href="https://www.youtube.com/watch?v=fmLydgvk2p4"><img src="https://img.shields.io/badge/Presentation--red"></a>
+
+### 📌 Overview
+
+DeCoR is a two-stage reinforcement learning framework that jointly optimizes mid-block crosswalk placement and traffic signal control from pedestrian and vehicle flow observations. On a 750 m real-world corridor, it reduces pedestrian access time while learning adaptive signal timings that lower both pedestrian and vehicle delay.
+
+<p align="center">
+  <img src="images/system_overview.png" alt="DeCoR system overview" style="width:800px"/>
+  <br>
+  <em>DeCoR co-optimizes crosswalk design and signal control through closed-loop traffic simulation.</em>
+</p>
+
 ---
 ### 🎯  Reproducing the Results
 The details on setup and testing are given below.
 
 ####  ⚙️ Setup
 
-- Install [SUMO version 1.21](https://github.com/eclipse-sumo/sumo/releases/tag/v1_21_0)  by following [official instructions](https://github.com/eclipse-sumo/sumo).
+- Install Eclipse SUMO 1.21 for exact reproduction, or [SUMO 1.22.0](https://github.com/eclipse-sumo/sumo/releases/tag/v1_22_0) for a newer supported installation.
 - To verify SUMO is installed and accessible, open terminal and enter:
   ```bash
   sumo --version
   ```
-- Install Python version 3.12 ([Anaconda 2024.06](https://repo.anaconda.com/archive/) recommended)
-- Create and activate a virtual environment (recommended):
+- Install Python version 3.12 and [uv](https://docs.astral.sh/uv/).
+- Go to the code folder and sync the project environment:
     ```bash
-     conda create -n decor python=3.12 -y
-     conda activate decor
-     ```
-
-- Go to the code folder and use the following command to install required packages
-    ```bash
-     pip install -r requirements.txt
+     uv sync
      ```
 
 #### 🚀 Training
@@ -29,11 +37,11 @@ __Step 2:__ Make sure config.py file has `evaluate` set to `False`  (set `gui` s
 
 __Step 3:__ Run the following command
 ```bash
-python main.py
+uv run python main.py
 ```
 __Step 4:__  To monitor progress using TensorBoard, open another terminal, go to the code folder and enter the following command:
 ```bash
-tensorboard --logdir=./runs
+uv run tensorboard --logdir=./runs
 ```
 __Step 5:__  The folder corresponding to the training run will be saved inside `runs/`.
 
@@ -99,3 +107,7 @@ If you find this work useful in your own research:
   note={Preprint},
 }
 ```
+
+---
+### 🙏 Acknowledgements
+We thank Jakob Erdmann ([@namdre](https://github.com/namdre)) of SUMO for helping with technical issues in simulation.

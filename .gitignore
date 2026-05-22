@@ -2,6 +2,7 @@
 __pycache__/
 ./__pycache__
 __pycache__
+.venv/
 
 ./simulation/.DS_Store
 
@@ -56,3 +57,4 @@ run_rl_control_baseline.py
 # All plot outputs
 *.pdf
 *.png
+!images/system_overview.png
