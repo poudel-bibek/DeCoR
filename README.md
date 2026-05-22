@@ -35,7 +35,7 @@ The demand XML files encode origin-destination demand, not fully routed paths; r
   <img src="images/demand_v2.png" alt="Observed pedestrian and vehicle demand" style="width:800px"/>
   <br>
   <em>
-  Observed pedestrian and vehicle departures, train/evaluation split, and pedestrian OD flows across the 14-zone corridor.
+  Observed pedestrian and vehicle departures, train/evaluation split, and pedestrian OD flows across the 14-zone corridor; 69.6% of pedestrian trips require crossing the corridor.
   </em>
 </p>
 

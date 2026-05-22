@@ -106,14 +106,14 @@ def maxima_from_means(means: np.ndarray) -> tuple[np.ndarray, list[list[int]]]:
 
 def add_figure_legend(fig: plt.Figure) -> None:
     handles = [
-        mlines.Line2D([], [], marker="o", markersize=10, color="#0066ff",
+        mlines.Line2D([], [], marker="o", markersize=13, color="#0066ff",
                       markeredgecolor="black", linewidth=0, label="Mean"),
-        mlines.Line2D([], [], marker="*", markersize=15, color="#00c853",
+        mlines.Line2D([], [], marker="*", markersize=19.5, color="#00c853",
                       markeredgecolor="white", markeredgewidth=1.2,
                       linewidth=0, label="Maxima"),
     ]
     fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.033),
-               ncol=2, frameon=True, fancybox=True, fontsize=15.5,
+               ncol=2, frameon=True, fancybox=True, fontsize=17.5,
                handlelength=2.2, columnspacing=2.5, labelcolor="#1f2937",
                facecolor="white", edgecolor="#111827", framealpha=1.0,
                borderpad=0.55)
