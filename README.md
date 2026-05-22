@@ -23,7 +23,7 @@ DeCoR is a two-stage reinforcement learning framework for co-optimizing mid-bloc
 | Pretrained policy | `runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth` | Checkpoint used by the default `eval_model_path`. |
 | Paper evaluation JSONs | `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` | Includes DeCoR control, fixed-time, unsignalized, and real-world unsignalized evaluation outputs. |
 | Design baseline JSON | `runs/baselines_experiment/baseline_results.json` | Stored uniform/random design baseline results used by plotting utilities. |
-| README and paper figures | `images/`, `plots/` | Source-controlled visual assets and plotting scripts. Generated `.png`/`.pdf` files are ignored unless explicitly tracked. |
+| README and paper figures | `images/`, `plots/` | Source-controlled visual assets and plotting scripts. |
 
 ---
 ### ⚙️ Setup
@@ -63,12 +63,6 @@ To monitor TensorBoard:
 uv run tensorboard --logdir runs
 ```
 
-On Linux or WSL, if multiprocessing fails because too many files are open, increase the file descriptor limit before training:
-
-```bash
-ulimit -n 20000
-```
-
 ---
 ### 📈 Evaluation
 
@@ -91,7 +85,7 @@ The active evaluation path in `main.py` evaluates the trained DeCoR policy over 
 runs/<run_name>/results/eval_<timestamp>/<checkpoint>_ppo.json
 ```
 
-The full paper comparison uses four result files: real-world unsignalized, DeCoR unsignalized, DeCoR fixed-time, and DeCoR control. Those paper JSONs are included under `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/`.
+Paper comparison results are included under `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` for real-world unsignalized, DeCoR unsignalized, DeCoR fixed-time, and DeCoR control settings.
 
 ### 📝 Code Structure
 
@@ -146,21 +140,15 @@ The full paper comparison uses four result files: real-world unsignalized, DeCoR
 | `min_thickness/max_thickness` | `2.0 / 15.0` | Crosswalk width bounds in meters. |
 | `num_mixtures` | `7` | GMM components for the design policy. |
 
-Evaluation demand scales are `[1.0, 1.25, 1.5, 1.75, 2.0, 2.25]` in range and `[0.5, 0.75, 2.5, 2.75]` out of range.
-
 ---
-### ⚠️ Notes and Debugging
+### ⚠️ Debugging
 
-- If SUMO commands are not found, make sure the SUMO binaries are on `PATH`; set `SUMO_HOME` if your local SUMO installation requires it.
 - Running with `gui=True` is useful for visual checks but substantially slower than headless SUMO.
+- On Linux or WSL, if multiprocessing fails because too many files are open, increase the file descriptor limit before training:
+  ```bash
+  ulimit -n 20000
+  ```
 - If a run fails, check `netconvert_log.txt`, `sumo_logfile.txt`, and `sumo_errorlog.txt` in the relevant `runs/` subfolder.
-- Generated scaled trips are written under `simulation/scaled_trips/` and are ignored by Git.
-- Large generated plots and PDFs are ignored by default. Tracked figures are explicitly allowed in `.gitignore`.
-
----
-### 📄 License
-
-This project is released under the license in `LICENSE`.
 
 ---
 ### 📖 Citation
