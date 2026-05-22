@@ -2,6 +2,10 @@
 
 <a href="https://arxiv.org/pdf/2605.21311"><img src="https://img.shields.io/badge/arXiv--green"></a> <a href="https://www.youtube.com/watch?v=fmLydgvk2p4"><img src="https://img.shields.io/badge/Presentation--red"></a>
 
+<p align="center">
+  <img src="images/header_anim.gif" alt="DeCoR animation" style="width:800px"/>
+</p>
+
 ### 📌 Overview
 
 DeCoR is a two-stage reinforcement learning framework for co-optimizing mid-block crosswalk placement and adaptive traffic signal control. It uses pedestrian and vehicle flow observations to generate crosswalk layouts, evaluate them in closed-loop traffic simulation, and learn signal timings that reduce delay for both pedestrians and vehicles.
