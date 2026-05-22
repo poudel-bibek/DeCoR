@@ -19,15 +19,34 @@ DeCoR is a two-stage reinforcement learning framework for co-optimizing mid-bloc
 </p>
 
 ---
-### 📦 Data, Checkpoints, and Results
+### 📊 Data
+
+The default corridor and demand inputs are stored in `simulation/` as SUMO-compatible files.
+
+| Input | Location | Description |
+| --- | --- | --- |
+| Corridor network | `simulation/Craver_traffic_lights_wide.net.xml` | SUMO network for the Craver Road study corridor. |
+| Pedestrian demand | `simulation/original_pedtrips.xml` | `2,221` pedestrian `<person>` / `<walk>` records over roughly one hour, with `14` TAZ labels and `24` origin/destination edges. |
+| Vehicle demand | `simulation/original_vehtrips.xml` | `200` vehicle `<trip>` records over roughly one hour, balanced between TAZ `1 -> 7` and `7 -> 1` with one default vehicle type. |
+
+The demand XML files encode origin-destination demand, not fully routed paths; realized routes depend on the SUMO network and routing configuration.
+
+<p align="center">
+  <img src="images/demand_v2.png" alt="Observed pedestrian and vehicle demand" style="width:800px"/>
+  <br>
+  <em>
+  Observed pedestrian and vehicle departures, train/evaluation split, and pedestrian OD flows across the 14-zone corridor.
+  </em>
+</p>
+
+---
+### 📦 Checkpoints and Results
 
 | Artifact | Location | Notes |
 | --- | --- | --- |
-| SUMO corridor assets | `simulation/` | Includes the Craver Road network, original vehicle trips, and original pedestrian trips. |
 | Pretrained policy | `runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth` | Checkpoint used by the default `eval_model_path`. |
 | Paper evaluation JSONs | `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` | Includes DeCoR control, fixed-time, unsignalized, and real-world unsignalized evaluation outputs. |
 | Design baseline JSON | `runs/baselines_experiment/baseline_results.json` | Stored uniform/random design baseline results used by plotting utilities. |
-| README and paper figures | `images/`, `plots/` | Source-controlled visual assets and plotting scripts. |
 
 ---
 ### ⚙️ Setup

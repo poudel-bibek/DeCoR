@@ -58,3 +58,4 @@ run_rl_control_baseline.py
 *.pdf
 *.png
 !images/system_overview.png
+!images/demand_v2.png
