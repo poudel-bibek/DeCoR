@@ -63,6 +63,16 @@ To monitor TensorBoard:
 uv run tensorboard --logdir runs
 ```
 
+### 🧠 Trained Design Policy
+
+<p align="center">
+  <img src="images/gmm_design_animation.gif" alt="Gaussian mixture model learned by the design agent" style="width:800px"/>
+  <br>
+  <em>
+  The design agent learns a Gaussian mixture over crosswalk location and width, where density peaks correspond to selected mid-block crosswalk proposals.
+  </em>
+</p>
+
 ---
 ### 📈 Evaluation
 
