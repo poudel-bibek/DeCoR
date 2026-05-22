@@ -46,6 +46,12 @@ wandb/
 CLAUDE.md
 
 ablation/
+DeCoR writeup/
+
+# One-off result helper artifacts
+crosswalk_designs_cache.json
+run_baselines.py
+run_rl_control_baseline.py
 
 # All plot outputs
 *.pdf

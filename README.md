@@ -87,3 +87,15 @@ The main implementation is organized as follows:
 ---
 #### ⚠️  Debugging
 - If something fails, check the  `netconvert_log.txt`, `sumo_logfile.txt`  and  `sumo_errorlog.txt`  files in the  `runs/`  folder.
+
+---
+### 📖 Citation
+If you find this work useful in your own research:
+```
+@misc{poudel2025decor,
+  title={DeCoR: Design and Control Co-Optimization for Urban Streets Using Reinforcement Learning},
+  author={Poudel, Bibek and Zhu, Lei and Heaslip, Kevin and Swaminathan, Sai and Li, Weizi},
+  year={2026},
+  note={Preprint},
+}
+```
