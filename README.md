@@ -1,6 +1,7 @@
 ## DeCoR: Design and Control Co-Optimization for Urban Streets Using Reinforcement Learning
 
 <a href="https://arxiv.org/pdf/2605.21311"><img src="https://img.shields.io/badge/arXiv--green"></a> <a href="https://www.youtube.com/watch?v=fmLydgvk2p4"><img src="https://img.shields.io/badge/Presentation--red"></a>
+[![GitHub release](https://img.shields.io/github/v/release/poudel-bibek/DeCoR)](https://github.com/poudel-bibek/DeCoR/releases)
 
 <p align="center">
   <img src="images/header_anim.gif" alt="DeCoR animation" style="width:800px"/>
