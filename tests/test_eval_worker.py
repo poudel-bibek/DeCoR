@@ -48,6 +48,25 @@ class FakeControlEnv:
 
 
 class EvaluationWorkerTests(unittest.TestCase):
+    def test_main_evaluation_passes_network_directly_to_worker(self):
+        import main
+
+        evaluation = {
+            "eval_lower_workers": 1, "eval_n_iterations": 1, "eval_worker_device": "cpu",
+            "in_range_demand_scales": [1.0], "out_of_range_demand_scales": [],
+            "lower_state_dim": (10, 123), "eval_save_dir": "/tmp", "eval_lower_timesteps": 450,
+        }
+        env = Mock(network_dir="/tmp/direct-network", extreme_edge_dict={})
+        with patch.object(main, "PPO"), patch.object(main, "DesignEnv", return_value=env), \
+             patch.object(main.mp, "Queue"), \
+             patch.object(main.mp, "Process", side_effect=RuntimeError("stop before worker")) as process:
+            with self.assertRaisesRegex(RuntimeError, "stop before worker"):
+                main.eval({}, {"lower_action_duration": 10}, {"model_kwargs": {"run_dir": "/tmp"}},
+                          {}, evaluation, tl=True, real_world=True)
+            arguments = process.call_args.kwargs["args"]
+            self.assertEqual(arguments[1]["total_action_timesteps_per_episode"], 45)
+            self.assertEqual(arguments[3], "/tmp/direct-network/network_iteration_0.net.xml")
+
     def setUp(self):
         self.control_args = {
             "max_timesteps": 360, "lower_action_duration": 10, "step_length": 1.0,

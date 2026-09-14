@@ -16,7 +16,6 @@ from plots import *
 from simulation.control_env import ControlEnv
 from simulation.design_env import DesignEnv
 from simulation.worker import parallel_eval_worker
-from simulation.env_utils import create_new_sumocfg
 
 def train(train_config, is_sweep=False, sweep_config=None):
     """
@@ -356,9 +355,6 @@ def eval(design_args,
         # Apply the action to output the latest SUMO network file
         higher_env._apply_action(proposals, iteration) # Pass the actual proposals derived above
         sumo_net_file = higher_env.current_net_file_path #f"{higher_env.network_dir}/network_iteration_{iteration}.net.xml"
-
-    # print(f"\nSUMO network file: {sumo_net_file}")
-    create_new_sumocfg(higher_ppo_args['model_kwargs']['run_dir'], iteration)
 
     # number of times the n_workers have to be repeated to cover all eval demands
     num_times_workers_recycle = len(eval_demand_scales) if len(eval_demand_scales) < n_workers else (len(eval_demand_scales) // n_workers) + 1
