@@ -167,8 +167,14 @@ def prepare(destination):
                 "observation_version": MLP_ActorCritic.observation_version,
                 "checkpoint_control_version": control_version, "active_arms": active_arms,
                 "learned_control_skip_reason": skip_reason,
+                "configuration": dict(design_args=d, control_args=ctrl,
+                                      higher_ppo_args=higher, lower_ppo_args=lower),
                 "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-                "source_hashes": {p: digest(ROOT / p) for p in ["ppo/models.py", "ppo/ppo_utils.py", "simulation/control_env.py", "simulation/design_env.py", "simulation/worker.py", "utils.py", "review_validation.py"]},
+                "source_hashes": {p: digest(ROOT / p) for p in [
+                    "ppo/models.py", "ppo/ppo.py", "ppo/ppo_utils.py", "simulation/control_env.py",
+                    "simulation/design_env.py", "simulation/worker.py", "simulation/env_utils.py",
+                    "simulation/sim_setup.py", "utils.py", "review_validation.py", "uv.lock",
+                    ctrl["vehicle_input_trips"], ctrl["pedestrian_input_trips"]]},
                 "layouts": {"original": original, "learned": learned},
                 "normalizer_x": env.normalizer_x,
                 "sigma_normalized": float(np.exp(-2.5)), "sigma_location_m": float(np.exp(-2.5)*span),
@@ -286,6 +292,9 @@ def trial(job):
         raise ValueError("Checkpoint changed since prepare. Use a fresh study directory.")
     if m.get("observation_version") != MLP_ActorCritic.observation_version:
         raise ValueError("Use prepare in a fresh directory for the current observation protocol.")
+    configuration = m.get("configuration")
+    if configuration is None:
+        raise ValueError("Manifest lacks an embedded configuration. Use prepare in a fresh study directory.")
     if job["arm"] not in m["active_arms"]:
         raise ValueError(m["learned_control_skip_reason"] or "Controller is not enabled in this manifest.")
     layout = m["layouts"][job["layout"]]
@@ -316,7 +325,7 @@ def trial(job):
         net.symlink_to(layout["network"])
     seed = job["seed"]
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-    d, ctrl, higher, lower = arguments(m.get("configuration"))
+    d, ctrl, higher, lower = arguments(configuration)
     ctrl.update(gui=False, max_timesteps=450, total_action_timesteps_per_episode=45,
                 vehicle_output_trips=str(folder / "vehicles.xml"),
                 pedestrian_output_trips=str(folder / "pedestrians.xml"),

@@ -12,6 +12,68 @@ import review_validation as review
 
 
 class ReviewConfigurationTest(unittest.TestCase):
+    def test_prepared_manifest_freezes_configuration_and_demand(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            inputs = [folder / name for name in ['vehicles.xml', 'pedestrians.xml']]
+            for path in inputs:
+                path.write_text('<routes/>')
+            configuration = {
+                'design_args': {'clamp_min': 0.01, 'clamp_max': 0.99},
+                'control_args': {'warmup_steps': [40, 140],
+                                 'vehicle_input_trips': str(inputs[0]),
+                                 'pedestrian_input_trips': str(inputs[1])},
+                'higher_ppo_args': {'model_kwargs': {}}, 'lower_ppo_args': {},
+            }
+            historical = folder / 'historical'
+            historical.mkdir()
+            config = historical / 'config.json'
+            config.write_text(json.dumps({'hyperparameters': configuration}))
+            checkpoint = folder / 'checkpoint.pth'
+            checkpoint.write_bytes(b'prepare checkpoint fixture')
+            state = {'lower': {}, 'higher': {'state_dict': {},
+                     'norm_x': {'min': 0, 'max': 100}, 'norm_y': {'min': 0, 'max': 100}}}
+            network_dir = folder / 'networks'
+            network_dir.mkdir()
+            for iteration in ['0', 'review']:
+                (network_dir / f'network_iteration_{iteration}.net.xml').write_text('<net/>')
+            env = Mock(network_dir=str(network_dir), extreme_edge_dict={},
+                       current_net_file_path=str(network_dir / 'network_iteration_review.net.xml'))
+            proposals = review.torch.tensor([[[0.25, 0.5], [0.75, 0.5]]])
+            policy = Mock()
+            policy.act.return_value = (None, proposals, review.torch.tensor(2), None)
+            policy.get_gmm_distribution.return_value = [Mock(
+                component_distribution=Mock(mean=proposals[0]),
+                mixture_distribution=Mock(probs=review.torch.tensor([0.5, 0.5])))]
+            with patch.object(review, 'RUN', historical), patch.object(review, 'CHECKPOINT', checkpoint), \
+                 patch.object(review, 'DesignEnv', return_value=env), \
+                 patch.object(review, 'PPO', return_value=Mock(policy=policy)), \
+                 patch.object(review.torch, 'load', return_value=state), \
+                 patch.object(review.Batch, 'from_data_list'), patch('builtins.print'):
+                destination = folder / 'study'
+                review.prepare(destination)
+                manifest = destination / 'manifest.json'
+                job = dict(manifest=str(manifest), arm='fixed', layout='original', seed=6100,
+                           scale=1.0, split='evaluation', directory=str(destination / 'trial'))
+                configuration['control_args']['warmup_steps'] = [100, 100]
+                config.write_text(json.dumps({'hyperparameters': configuration}))
+                with patch.object(review, 'ControlEnv', side_effect=RuntimeError('stop before SUMO')) as control:
+                    with self.assertRaisesRegex(RuntimeError, 'stop before SUMO'):
+                        review.trial(job)
+                    self.assertEqual(control.call_args.args[0]['warmup_steps'], [40, 140])
+
+                result = Path(job['directory']) / 'result.json'
+                result.write_text(json.dumps({'job': job, 'manifest_sha256': review.digest(manifest)}))
+                self.assertEqual(review.trial(job), str(result))
+                for path in inputs:
+                    with self.subTest(input=path.name):
+                        path.write_text('<routes changed="true"/>')
+                        with patch.object(review, 'ControlEnv') as control:
+                            with self.assertRaisesRegex(ValueError, 'Source changed'):
+                                review.trial(job)
+                            control.assert_not_called()
+                        path.write_text('<routes/>')
+
     def test_embedded_configuration_and_cache_provenance(self):
         configuration = {
             'design_args': {'save_graph_images': True, 'save_gmm_plots': True},
@@ -55,7 +117,8 @@ class ReviewConfigurationTest(unittest.TestCase):
             network.write_text('<net/>')
 
             for changed, message in [('configuration', 'different manifest'), ('version', 'observation protocol'),
-                                     ('source', 'Source changed'), ('checkpoint', 'Checkpoint changed')]:
+                                     ('source', 'Source changed'), ('checkpoint', 'Checkpoint changed'),
+                                     ('missing_configuration', 'embedded configuration')]:
                 candidate = copy.deepcopy(metadata)
                 if changed == 'configuration':
                     candidate['configuration']['control_args']['per_timestep_state_dim'] = 999
@@ -63,6 +126,8 @@ class ReviewConfigurationTest(unittest.TestCase):
                     candidate['observation_version'] = 1
                 elif changed == 'source':
                     candidate['source_hashes']['review_validation.py'] = 'changed'
+                elif changed == 'missing_configuration':
+                    candidate.pop('configuration')
                 else:
                     candidate['checkpoint_sha256'] = 'changed'
                 manifest.write_text(json.dumps(candidate))
@@ -87,6 +152,7 @@ class ReviewConfigurationTest(unittest.TestCase):
             metadata = {
                 'source_hashes': {}, 'checkpoint': str(checkpoint), 'checkpoint_sha256': review.digest(checkpoint),
                 'observation_version': 2, 'learned_control_skip_reason': None,
+                'configuration': {},
                 'layouts': {'final': {'network': str(network), 'iteration': 'final', 'num_proposals': 4,
                                       'real_world': False, 'extreme_edges': {}}},
             }
