@@ -1,5 +1,7 @@
 import os
-import xml
+import copy
+import math
+import xml.dom.minidom
 import time
 import json
 import torch
@@ -36,6 +38,7 @@ def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, nor
         'norm_y': norm_y
     },
     'lower': {
+        'observation_version': lower_policy.observation_version,
         'state_dict': lower_policy.state_dict(),  
         'state_normalizer_mean': lower_state_normalizer.mean.numpy(),  
         'state_normalizer_M2': lower_state_normalizer.M2.numpy(),  
@@ -47,6 +50,11 @@ def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
     Load policy state dict and welford normalizer stats.
     """
     checkpoint = torch.load(load_path)
+    if checkpoint['lower'].get('observation_version', 1) != lower_policy.observation_version:
+        raise ValueError(
+            'Checkpoint observation packing and Welford statistics are incompatible with '
+            'this controller. Use fresh training or the historical checkout.'
+        )
     # In place operations
     higher_policy.load_state_dict(checkpoint['higher']['state_dict'])
     lower_policy.load_state_dict(checkpoint['lower']['state_dict'])
@@ -209,133 +217,62 @@ def clear_elements(parent, tag):
 
 def scale_demand_sliced_window(input_file, output_file, scale_factor, demand_type, window_size, evaluation=False):
     """
-    Scale the demand in a randomly-sampled time window of the input file.
-    window_size: max episode length (in seconds), including any warm‐up.
-    A random t_start is chosen in [0, ORIGINAL_TIME_SPAN - window_size],
-    and only trips/persons with depart in [t_start, t_start + window_size)
-    are kept, re‐timed, and scaled.
+    Compress and repeat demand from a random window, including warm-up.
+    Training uses [0, 2400); evaluation uses the held-out [2400, 3600).
+    Only departures within the output window are retained. For nonuniform
+    demand, a partial repetition need not contain exactly scale_factor times
+    the original number of trips.
     """
-    
-    if evaluation:
-        START_SPAN = 3000
-        END_SPAN = 3500 
-    else: 
-        START_SPAN = 0
-        END_SPAN = 2400 
-
+    START_SPAN, END_SPAN = (2400, 3600) if evaluation else (0, 2400)
+    if not math.isfinite(scale_factor) or scale_factor <= 0:
+        raise ValueError("scale_factor must be finite and positive")
+    if not math.isfinite(window_size) or not 0 < window_size <= END_SPAN - START_SPAN:
+        raise ValueError("window_size must be positive and fit within the selected data partition")
+    if demand_type not in ("vehicle", "pedestrian"):
+        raise ValueError("Invalid demand_type: must be 'vehicle' or 'pedestrian'")
     t_start = random.uniform(START_SPAN, END_SPAN - window_size)
     t_end = t_start + window_size
-
-    # 2) load XML and prepare root
     tree = ET.parse(input_file)
     root = tree.getroot()
+    tag = "trip" if demand_type == "vehicle" else "person"
+    routes_parent = root.find(".//routes") if demand_type == "pedestrian" else root
+    if routes_parent is None:
+        routes_parent = root
+    originals = routes_parent.findall(tag)
+    used_ids = {trip.get("id") for trip in originals}
+    clear_elements(routes_parent, tag)
+    windowed = []
+    for trip in originals:
+        depart = float(trip.get("depart"))
+        if t_start <= depart < t_end:
+            windowed.append((trip, depart - t_start))
 
-    if demand_type == "vehicle":
-        # remove all original trips, we'll re-add only the windowed ones
-        clear_elements(root, "trip")
-
-        # reload from input to filter
-        full_tree = ET.parse(input_file)
-        full_root = full_tree.getroot()
-        all_trips = full_root.findall("trip")
-
-        # first pass: collect trips inside window, shift & scale depart
-        windowed = []
-        for trip in all_trips:
-            depart = float(trip.get("depart"))
-            if t_start <= depart < t_end:
-                # clone element
-                new_trip = ET.Element("trip", trip.attrib)
-                # shift so window start → 0, then scale down
-                shifted = depart - t_start
-                new_depart = shifted / scale_factor
-                new_trip.set("depart", f"{new_depart:.2f}")
-                windowed.append(new_trip)
-                root.append(new_trip)
-
-        # replicate across scale_factor slices
-        original_count = len(windowed)
-        for i in range(1, int(scale_factor)):
-            for trip in windowed[:original_count]:
-                dup = ET.Element("trip")
-                for attr, val in trip.attrib.items():
-                    if attr == "id":
-                        dup.set(attr, f"{val}_{i}")
-                    elif attr == "depart":
-                        depart_val = float(val)
-                        # spread duplicates over the window
-                        offset = window_size * i / scale_factor
-                        dup.set(attr, f"{depart_val + offset:.2f}")
+    scaled = []
+    for i in range(math.ceil(scale_factor)):
+        for trip, shifted in windowed:
+            new_depart = (shifted + window_size * i) / scale_factor
+            if new_depart >= window_size:
+                continue
+            new_trip = copy.deepcopy(trip)
+            new_trip.set("depart", str(new_depart))
+            if i:
+                new_id = f"{trip.get('id')}_{i}"
+                while new_id in used_ids:
+                    new_id += "_"
+                used_ids.add(new_id)
+                new_trip.set("id", new_id)
+            for child in new_trip:
+                if child.tag == "walk" and "from" not in child.attrib:
+                    edges = child.get("edges", "").split()
+                    if edges:
+                        child.set("from", edges[0])
                     else:
-                        dup.set(attr, val)
-                root.append(dup)
+                        logging.warning(
+                            f"Walk element for {new_trip.get('id')} missing both 'from' and 'edges'."
+                        )
+            scaled.append(new_trip)
+    routes_parent.extend(sorted(scaled, key=lambda trip: float(trip.get("depart"))))
 
-    elif demand_type == "pedestrian":
-        # find the <routes> parent (or root if missing)
-        routes_parent = root.find(".//routes") or root
-        clear_elements(routes_parent, "person")
-
-        # reload to filter
-        full_tree = ET.parse(input_file)
-        full_root = full_tree.getroot()
-        all_persons = full_root.findall(".//person")
-
-        windowed = []
-        # first pass: filter, shift, scale
-        for person in all_persons:
-            depart = float(person.get("depart"))
-            if t_start <= depart < t_end:
-                new_person = ET.Element("person", person.attrib)
-                shifted = depart - t_start
-                new_depart = shifted / scale_factor
-                new_person.set("depart", f"{new_depart:.2f}")
-
-                # copy children, fixing 'from' if needed
-                for child in person:
-                    new_child = ET.SubElement(new_person, child.tag, child.attrib)
-                    if child.tag == "walk" and "from" not in child.attrib:
-                        edges = child.get("edges", "").split()
-                        if edges:
-                            new_child.set("from", edges[0])
-                        else:
-                            logging.warning(
-                                f"Walk element for {new_person.get('id')} missing both 'from' and 'edges'."
-                            )
-                windowed.append(new_person)
-                routes_parent.append(new_person)
-
-        # replicate
-        original_count = len(windowed)
-        for i in range(1, int(scale_factor)):
-            for person in windowed[:original_count]:
-                dup = ET.Element("person")
-                for attr, val in person.attrib.items():
-                    if attr == "id":
-                        dup.set(attr, f"{val}_{i}")
-                    elif attr == "depart":
-                        depart_val = float(val)
-                        offset = window_size * i / scale_factor
-                        dup.set(attr, f"{depart_val + offset:.2f}")
-                    else:
-                        dup.set(attr, val)
-
-                # copy children
-                for child in person:
-                    new_child = ET.SubElement(dup, child.tag, child.attrib)
-                    if child.tag == "walk" and "from" not in child.attrib:
-                        edges = child.get("edges", "").split()
-                        if edges:
-                            new_child.set("from", edges[0])
-                        else:
-                            logging.warning(
-                                f"Walk element for {dup.get('id')} missing both 'from' and 'edges'."
-                            )
-                routes_parent.append(dup)
-
-    else:
-        raise ValueError("Invalid demand_type: must be 'vehicle' or 'pedestrian'")
-
-    # 3) serialize & write out
     xml_str = ET.tostring(root, encoding="unicode")
     dom = xml.dom.minidom.parseString(xml_str)
     pretty = "\n".join(line for line in dom.toprettyxml(indent="    ").split("\n") if line.strip())
@@ -343,9 +280,6 @@ def scale_demand_sliced_window(input_file, output_file, scale_factor, demand_typ
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(pretty)
-
-    # ensure write has settled
-    time.sleep(1)
 
 def get_averages(result_json_path, total=False):
     """

@@ -152,7 +152,9 @@ def train(train_config, is_sweep=False, sweep_config=None):
                 current_lr_higher = higher_ppo.update_learning_rate(higher_update_count, total_updates_higher)
 
             avg_higher_reward = sum(higher_memories.rewards) / len(higher_memories.rewards)
-            higher_loss = higher_ppo.update(higher_memories)
+            with torch.no_grad():
+                bootstrap_value = higher_ppo.policy_old.critic(higher_next_state, device=device).item()
+            higher_loss = higher_ppo.update(higher_memories, bootstrap_value=bootstrap_value)
             del higher_memories # Reset memory
             higher_memories = Memory()
 

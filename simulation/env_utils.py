@@ -10,26 +10,6 @@ import numpy as np
 import random
 import xml.etree.ElementTree as ET
 
-def create_new_sumocfg(save_dir, network_iteration):
-    """
-    Need to iteratively load a new net file.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    config_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <configuration>
-        <input>
-            <net-file value="network_iterations/network_iteration_{network_iteration}.net.xml"/>
-        </input>
-        <output>
-            <log value="sumo_logfile.txt"/>
-            <error-log value="sumo_errorlog.txt"/>
-        </output>
-    </configuration>"""
-    
-    temp_config_path = f'{save_dir}/Craver_traffic_lights_iterative.sumocfg'
-    with open(temp_config_path, 'w') as f:
-        f.write(config_content)
-        
 def pairwise(iterable):
     """
     Generates consecutive pairs from an iterable.
