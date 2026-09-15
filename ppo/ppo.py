@@ -70,15 +70,15 @@ class PPO:
         self.optimizer.param_groups[0]['lr'] = new_lr
         return new_lr
 
-    def compute_gae(self, rewards, values, is_terminals, gamma, gae_lambda):
+    def compute_gae(self, rewards, values, is_terminals, gamma, gae_lambda, bootstrap_value=0.0):
         """
-        For most steps in the sequence, we use the value estimate of the next state to calculate the TD error.
-        For the last step (step == len(rewards) - 1), we use the value estimate of the current state. 
+        Bootstrap an unfinished fragment from its next-state value.
+        True terminal transitions always use zero future value.
         """ 
 
         advantages = torch.zeros_like(rewards, dtype=torch.float32)
         gae = 0.0
-        next_value = 0.0
+        next_value = bootstrap_value
         # First, we iterate through the rewards in reverse order.
         for step in reversed(range(rewards.shape[0])):
             # If its the terminal step (which has no future) or if its the last step in our collected experiences (which may not be terminal).
@@ -98,7 +98,7 @@ class PPO:
             #print(f"Next value: {next_value}")
         return advantages
 
-    def update(self, memories, num_proposals = None):
+    def update(self, memories, num_proposals = None, bootstrap_value=0.0):
         """
         Update the policy and value networks using the collected experiences.
         memories = combined memories from all processes. 
@@ -133,7 +133,7 @@ class PPO:
         # print(f"\nIs terminals shape: {is_terminals.shape}")
 
         # Compute GAE
-        advantages = self.compute_gae(rewards, old_values, is_terminals, self.gamma, self.gae_lambda)
+        advantages = self.compute_gae(rewards, old_values, is_terminals, self.gamma, self.gae_lambda, bootstrap_value)
 
         # Advantage = how much better is it to take a specific action compared to the average action. 
         # GAE = difference between the empirical return and the value function estimate.
@@ -201,8 +201,8 @@ class PPO:
                 else: # higher agent
                     logprobs, state_values, dist_entropy = self.policy.evaluate(states_batch, actions_batch, device = self.device) 
 
-                # state_values should already be squeezed by the critic
-                # state_values = state_values.squeeze(-1) 
+                # Match one value per state for both MLP (B, 1) and GAT (B,) critics.
+                state_values = state_values.reshape(-1)
 
                 # Finding the ratio (pi_theta / pi_theta_old) for importance sampling (we want to use the samples obtained from old policy to get the new policy)
                 # Ensure shapes match for subtraction

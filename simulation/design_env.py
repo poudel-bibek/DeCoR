@@ -110,6 +110,7 @@ class DesignEnv(gym.Env):
             'lower_approx_kl': 0.0,
         }
         self.current_net_file_path = None
+        self.current_network_iteration = None
         self.lower_memories = Memory()
 
         self.lower_state_normalizer = None
@@ -231,7 +232,9 @@ class DesignEnv(gym.Env):
     def step(self, 
              padded_proposals, 
              num_proposals, 
-             iteration):
+             iteration,
+             fixed_control=False,
+             update_layout=True):
         """
         Every step in the design environment involves:
         - Updating the network xml file based on the design action.
@@ -245,16 +248,18 @@ class DesignEnv(gym.Env):
         # print(f"\nProposals: {proposals}")
 
         # Apply the action to output the latest SUMO network file as well as modify the iterative_torch_graph.
-        self._apply_action(proposals, iteration)
+        if update_layout:
+            self._apply_action(proposals, iteration)
 
         done = False
-        lower_old_policy = self.lower_ppo.policy_old.to(self.lower_ppo_args['device'])
-        lower_old_policy.share_memory() # The same policy is shared among all workers.
-        lower_old_policy.eval() # So that dropout, batchnorm, layer norm etc. are not used during inference
+        lower_old_policy = None
+        if not fixed_control:
+            lower_old_policy = self.lower_ppo.policy_old.to(self.lower_ppo_args['device'])
+            lower_old_policy.share_memory() # The same policy is shared among all workers.
+            lower_old_policy.eval() # So that dropout, batchnorm, layer norm etc. are not used during inference
 
         lower_queue = mp.Queue()
         lower_processes = []
-        active_lower_workers = []
         for rank in range(self.control_args['lower_num_processes']):
             worker_seed = self.control_args['global_seed'] + iteration * 1000 + rank
             p = mp.Process(
@@ -271,90 +276,84 @@ class DesignEnv(gym.Env):
                     self.lower_state_normalizer,
                     self.extreme_edge_dict,
                     self.lower_ppo_args['device'],
-                    iteration,
-                    self.current_net_file_path)
+                    self.current_network_iteration,
+                    self.current_net_file_path,
+                    fixed_control)
                 )
             p.start()
             lower_processes.append(p)
-            active_lower_workers.append(rank)
         
         # lower_memories = Memory()
         design_rewards_norm = []
         design_rewards_unnorm = [] # Unnormalized reward for logging.
         lower_rewards_norm = []
         lower_rewards_unnorm = []
-        while active_lower_workers:
-            print(f"Active workers: {active_lower_workers}")
-            rank, memory, design_reward_unnorm = lower_queue.get(timeout=120) 
-
+        for _ in lower_processes:
+            rank, memory, design_reward_unnorm, executed_decisions = lower_queue.get(timeout=120)
+            design_rewards_norm.append(self.higher_reward_normalizer.normalize([design_reward_unnorm]).item())
+            design_rewards_unnorm.append(design_reward_unnorm)
+            self.global_step += executed_decisions * self.control_args['lower_action_duration']
             if memory is None:
-                print(f"Worker {rank} None received\n")
-                design_rewards_norm.append(self.higher_reward_normalizer.normalize([design_reward_unnorm]).item()) # Store the normalized reward
-                design_rewards_unnorm.append(design_reward_unnorm) # Store the unnormalized reward
-                active_lower_workers.remove(rank)
-            else:
-                current_action_timesteps = len(memory.states)
-                print(f"Memory from worker {rank} received. Memory size: {current_action_timesteps}\n")
-                self.lower_memories.states.extend(torch.from_numpy(np.asarray(memory.states)))
-                self.lower_memories.actions.extend(torch.from_numpy(np.asarray(memory.actions)))
-                self.lower_memories.num_proposals.extend(torch.from_numpy(np.asarray(memory.num_proposals)))
-                self.lower_memories.values.extend(memory.values)
-                self.lower_memories.logprobs.extend(memory.logprobs)
-                self.lower_memories.is_terminals.extend(memory.is_terminals)
+                continue
+            current_action_timesteps = len(memory.states)
+            print(f"Memory from worker {rank} received. Memory size: {current_action_timesteps}\n")
+            self.lower_memories.states.extend(torch.from_numpy(np.asarray(memory.states)))
+            self.lower_memories.actions.extend(torch.from_numpy(np.asarray(memory.actions)))
+            self.lower_memories.num_proposals.extend(torch.from_numpy(np.asarray(memory.num_proposals)))
+            self.lower_memories.values.extend(memory.values)
+            self.lower_memories.logprobs.extend(memory.logprobs)
+            self.lower_memories.is_terminals.extend(memory.is_terminals)
 
-                lower_rewards_unnorm.extend(memory.rewards)
-                current_memory_norm = [self.lower_reward_normalizer.normalize([r]).item() for r in memory.rewards]
-                
-                # supply normalized rewards for gradient updates
-                lower_rewards_norm.extend(current_memory_norm)
-                self.lower_memories.rewards.extend(current_memory_norm)
+            lower_rewards_unnorm.extend(memory.rewards)
+            current_memory_norm = [self.lower_reward_normalizer.normalize([r]).item() for r in memory.rewards]
 
-                self.action_timesteps += current_action_timesteps
-                self.global_step += current_action_timesteps * self.control_args['lower_action_duration']
-                print(f"Action timesteps: {self.action_timesteps}, global step: {self.global_step}")
-                del memory #https://pytorch.org/docs/stable/multiprocessing.html
+            # supply normalized rewards for gradient updates
+            lower_rewards_norm.extend(current_memory_norm)
+            self.lower_memories.rewards.extend(current_memory_norm)
 
-                # Update PPO every n times (or close to n) action has been taken 
-                if self.action_timesteps >= self.control_args['lower_update_freq']:
-                    # print(f"Updating Lower PPO with {len(self.lower_memories.actions)} memories") 
-                    self.lower_update_count += 1
-
-                    avg_lower_reward_unnorm = sum(lower_rewards_unnorm) / len(lower_rewards_unnorm)
-                    avg_lower_reward_norm = sum(lower_rewards_norm) / len(lower_rewards_norm)
-                
-                    # Anneal after every update
-                    if self.control_args['lower_anneal_lr']:
-                        current_lr_lower = self.lower_ppo.update_learning_rate(iteration, self.total_updates_lower)
-
-                    lower_loss = self.lower_ppo.update(self.lower_memories, num_proposals)
-
-                    # Reset all memories
-                    del self.lower_memories
-                    self.lower_memories = Memory() 
-                    lower_rewards_norm = []
-                    lower_rewards_unnorm = []
-                    self.action_timesteps = 0
-
-                    # This contains the info of the last time it gets updated. While it could be updated multiple times during single step.
-                    self.info = {
-                        'lower_avg_reward_norm': avg_lower_reward_norm,
-                        'lower_avg_reward_unnorm': avg_lower_reward_unnorm,
-                        'lower_update_count': self.lower_update_count,
-                        'lower_policy_loss': lower_loss['policy_loss'],
-                        'lower_value_loss': lower_loss['value_loss'],
-                        'lower_entropy_loss': lower_loss['entropy_loss'],
-                        'lower_total_loss': lower_loss['total_loss'],
-                        'lower_current_lr': current_lr_lower if self.control_args['lower_anneal_lr'] else self.lower_ppo_args['lr'],
-                        'lower_approx_kl': lower_loss['approx_kl'],
-                    }      
+            self.action_timesteps += current_action_timesteps
+            print(f"Action timesteps: {self.action_timesteps}, global step: {self.global_step}")
+            del memory #https://pytorch.org/docs/stable/multiprocessing.html
 
         # TODO: Update the normalizer stats for all 3.
 
 
         # Clean up. The join() method ensures that the main program waits for all processes to complete before continuing.
         for p in lower_processes:
-            p.join() 
+            p.join()
         # print(f"All processes joined\n\n")
+
+        # Keep shared policy weights fixed until every worker has finished.
+        if not fixed_control and self.action_timesteps >= self.control_args['lower_update_freq']:
+            # print(f"Updating Lower PPO with {len(self.lower_memories.actions)} memories")
+            self.lower_update_count += 1
+
+            avg_lower_reward_unnorm = sum(lower_rewards_unnorm) / len(lower_rewards_unnorm)
+            avg_lower_reward_norm = sum(lower_rewards_norm) / len(lower_rewards_norm)
+
+            # Anneal after every update
+            if self.control_args['lower_anneal_lr']:
+                current_lr_lower = self.lower_ppo.update_learning_rate(iteration, self.total_updates_lower)
+
+            lower_loss = self.lower_ppo.update(self.lower_memories, num_proposals)
+
+            # Reset all memories
+            del self.lower_memories
+            self.lower_memories = Memory()
+            self.action_timesteps = 0
+
+            # Record the latest lower-policy update.
+            self.info = {
+                'lower_avg_reward_norm': avg_lower_reward_norm,
+                'lower_avg_reward_unnorm': avg_lower_reward_unnorm,
+                'lower_update_count': self.lower_update_count,
+                'lower_policy_loss': lower_loss['policy_loss'],
+                'lower_value_loss': lower_loss['value_loss'],
+                'lower_entropy_loss': lower_loss['entropy_loss'],
+                'lower_total_loss': lower_loss['total_loss'],
+                'lower_current_lr': current_lr_lower if self.control_args['lower_anneal_lr'] else self.lower_ppo_args['lr'],
+                'lower_approx_kl': lower_loss['approx_kl'],
+            }
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1258,6 +1257,7 @@ class DesignEnv(gym.Env):
 
         # Generate the final net file using netconvert
         self.current_net_file_path = f'{self.network_dir}/network_iteration_{iteration}.net.xml'
+        self.current_network_iteration = iteration
         netconvert_log_file = f'{self.run_dir}/netconvert_log.txt'
         command = (
             f"netconvert "

@@ -54,7 +54,8 @@ class WelfordNormalizer:
                 return self.M2 / (self.count.value - 1)
 
     def std(self):
-        return torch.sqrt(self.variance()) + self.eps
+        variance = self.variance()
+        return torch.where(variance == 0, torch.ones_like(variance), torch.sqrt(variance) + self.eps)
 
     def normalize(self, x):
         """

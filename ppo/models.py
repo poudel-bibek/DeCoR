@@ -22,6 +22,8 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class MLP_ActorCritic(nn.Module):
+    observation_version = 2  # Fixed phase slots, then west-to-east crossing features.
+
     def __init__(self, in_channels, action_dim, **kwargs):
         """
         MLP Actor-Critic network in two sizes: small, medium. 
@@ -437,6 +439,7 @@ class GAT_v2_ActorCritic(nn.Module):
         # Convert node features and scores to dense batched format (necessary for batch processing of graphs)
         batch_x, mask = to_dense_batch(x, batch)  # [batch_size, max_nodes, num_features]
         batch_scores, _ = to_dense_batch(scores, batch)  # [batch_size, max_nodes]
+        batch_scores = batch_scores.masked_fill(~mask, float('-inf'))
         # print(f"Dense batch_x shape: {batch_x.shape}")
         # print(f"Dense mask shape: {mask.shape}")
         # print(f"Dense batch_scores shape: {batch_scores.shape}")

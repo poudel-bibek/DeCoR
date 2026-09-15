@@ -579,8 +579,8 @@ class ControlEnv(gym.Env):
         """
         * Observation space is defined per action step (i.e. accumulated over action duration)
         """
-        return gym.spaces.Box(low=0, 
-                              high=1, 
+        return gym.spaces.Box(low=-1,
+                              high=np.inf,
                               shape=(self.steps_per_action, 
                                      self.per_timestep_state_dim), 
                                      dtype=np.float32)
@@ -600,11 +600,11 @@ class ControlEnv(gym.Env):
         switch_state, _ = self._detect_switch(action, self.previous_action)
  
         for i in range(self.steps_per_action): # Run simulation steps for the duration of the action
-            self._update_pedestrian_existence_times()
 
             # Apply action is called every timestep (return information useful for reward calculation)
             current_phase = self._apply_action(action, i, switch_state)
             traci.simulationStep() # Step length is the simulation time that elapses when each time this is called.
+            self._update_pedestrian_existence_times()
             self.step_count += 1
             obs = self._get_observation(current_phase)
             observation_buffer.append(obs)
@@ -636,6 +636,7 @@ class ControlEnv(gym.Env):
             self.previous_action = action
 
         reward = 0
+        info = {"vehicle_wait": 0.0, "pedestrian_wait": 0.0}
         done = False
         observation_buffer = []
         action = np.array(action)
@@ -646,7 +647,6 @@ class ControlEnv(gym.Env):
         if tl: 
             if unsignalized: # Set all Midblock as green.
                 for i in range(self.steps_per_action): # Run simulation steps for the duration of the action
-                    self._update_pedestrian_existence_times()
                     current_phase = [1]*len(self.tl_ids) # random phase
                     # Midblock
                     for j in range(1, len(self.tl_ids)):
@@ -654,6 +654,7 @@ class ControlEnv(gym.Env):
                         mb_phase_string = "GgggggGG" if tl_id == "cluster_9740157181_9740483933" else "GGG"
                         traci.trafficlight.setRedYellowGreenState(tl_id, mb_phase_string)
                     traci.simulationStep() # Step length is the simulation time that elapses when each time this is called.
+                    self._update_pedestrian_existence_times()
                     self.step_count += 1
                     obs = self._get_observation(current_phase)
                     observation_buffer.append(obs)
@@ -661,30 +662,36 @@ class ControlEnv(gym.Env):
                     # Count near-conflicts after each step (after each simulation step has been applied)
                     self.total_conflicts += self._count_near_conflicts(self.corrected_occupancy_map)
                     self._get_pedestrian_arrival_times()
+                    info["vehicle_wait"] += self.get_vehicle_waiting_time()
+                    info["pedestrian_wait"] += self.get_pedestrian_waiting_time()
 
             else: # Apply action for TL (For evaluation)
                 for i in range(self.steps_per_action): # Run simulation steps for the duration of the action
-                    self._update_pedestrian_existence_times()
                     current_phase = [1]*len(self.tl_ids) # random phase
                     traci.simulationStep() # Step length is the simulation time that elapses when each time this is called.
+                    self._update_pedestrian_existence_times()
                     self.step_count += 1
                     obs = self._get_observation(current_phase)
                     observation_buffer.append(obs)
                     self._get_pedestrian_arrival_times()
+                    info["vehicle_wait"] += self.get_vehicle_waiting_time()
+                    info["pedestrian_wait"] += self.get_pedestrian_waiting_time()
         else:
             self.total_switches += sum(full_switch_state)
             # Only apply the action from policy if not TL.   
             for i in range(self.steps_per_action): # Run simulation steps for the duration of the action
-                self._update_pedestrian_existence_times()
 
                 # Apply action is called every timestep (return information useful for reward calculation)
                 current_phase = self._apply_action(action, i, switch_state)
                 traci.simulationStep() # Step length is the simulation time that elapses when each time this is called.
+                self._update_pedestrian_existence_times()
                 self.step_count += 1
                 obs = self._get_observation(current_phase)
                 observation_buffer.append(obs)
                 
                 self._get_pedestrian_arrival_times()
+                info["vehicle_wait"] += self.get_vehicle_waiting_time()
+                info["pedestrian_wait"] += self.get_pedestrian_waiting_time()
 
         # Outside the loop, before reward calculation
         # pressure_dict = self._get_pressure_dict(self.corrected_occupancy_map)
@@ -697,7 +704,7 @@ class ControlEnv(gym.Env):
             done = True
 
         observation = np.asarray(observation_buffer, dtype=np.float32) 
-        return observation, reward, done, False, {} # info is empty
+        return observation, reward, done, False, info
 
     def _detect_switch(self, current_action, previous_action):
         """
@@ -735,7 +742,7 @@ class ControlEnv(gym.Env):
 
     def _get_observation(self, current_phase, print_map=True):
         """
-        * Per step observation size = 120
+        * Per step observation size = 123
         * Assume max_proposals = 10
         * Composed of: 
             - Current phase information (1 + 10 elements that transitions throughout the action duration)
@@ -771,8 +778,8 @@ class ControlEnv(gym.Env):
         observation = -1 * np.ones(self.per_timestep_state_dim, dtype=np.float32)
         occupancy_map, vehicle_pos_map = self._get_occupancy_map()
         self.corrected_occupancy_map = self._step_operations(occupancy_map, vehicle_pos_map, print_map=print_map)
-        length = len(current_phase)
-        observation[:length] = np.array(current_phase, dtype=np.float32)
+        observation[:len(current_phase)] = np.array(current_phase, dtype=np.float32)
+        length = self.max_proposals + 1  # Reserve every phase slot before occupancy.
         
         # Intersection
         # - vehicles
@@ -1381,7 +1388,17 @@ class ControlEnv(gym.Env):
         if self.sumo_running:
             self.close()
 
-        window_size = self.max_timesteps + self.warmup_steps[1]
+        self.tl_ids = ['cluster_172228464_482708521_9687148201_9687148202_#5more']
+        self.tl_lane_dict = get_related_lanes_edges()
+        self.tl_pedestrian_status.clear()
+        self.pedestrian_existence_times.clear()
+        self.pedestrian_arrival_times.clear()
+        self.total_unique_ids_veh.clear()
+        self.total_unique_ids_ped.clear()
+        self.recorded_conflicts.clear()
+        self.previous_action = None
+
+        window_size = self.max_timesteps * self.step_length + self.warmup_steps[1]
 
         if self.manual_demand_veh is not None : 
             #scaling = convert_demand_to_scale_factor(self.manual_demand_veh, "vehicle", self.vehicle_input_trips) # Convert the demand to scaling factor first
@@ -1403,24 +1420,16 @@ class ControlEnv(gym.Env):
             scale_demand_sliced_window(self.pedestrian_input_trips, self.pedestrian_output_trips, scale_factor_pedestrian, demand_type="pedestrian", window_size=window_size, evaluation=eval_mode)
 
 
-        # create the new sumocfg file before the call
-        create_new_sumocfg(self.run_dir, self.network_iteration)
-
+        # Workers share read-only geometry; each keeps its own SUMO logs.
+        sumo_cmd = ["sumo-gui" if self.use_gui else "sumo",
+                    "--quit-on-end",
+                    "--net-file", f"{self.run_dir}/network_iterations/network_iteration_{self.network_iteration}.net.xml",
+                    "--log", f"{self.run_dir}/sumo_logfile{self.traci_label}.txt",
+                    "--error-log", f"{self.run_dir}/sumo_errorlog{self.traci_label}.txt",
+                    "--step-length", str(self.step_length),
+                    "--route-files", f"{self.vehicle_output_trips},{self.pedestrian_output_trips}"]
         if self.auto_start:
-            sumo_cmd = ["sumo-gui" if self.use_gui else "sumo", 
-                        # "--verbose",
-                        "--start" , 
-                        "--quit-on-end", 
-                        "-c", f"{self.run_dir}/Craver_traffic_lights_iterative.sumocfg", 
-                        "--step-length", str(self.step_length),
-                        "--route-files", f"{self.vehicle_output_trips},{self.pedestrian_output_trips}"]
-        else:
-            sumo_cmd = ["sumo-gui" if self.use_gui else "sumo", 
-                        # "--verbose",  
-                        "--quit-on-end", 
-                        "-c", f"{self.run_dir}/Craver_traffic_lights_iterative.sumocfg", 
-                        "--step-length", str(self.step_length),
-                        "--route-files", f"{self.vehicle_output_trips},{self.pedestrian_output_trips}"]
+            sumo_cmd.append("--start")
         max_retries = 3
         try:
             for attempt in range(max_retries):
@@ -1447,6 +1456,7 @@ class ControlEnv(gym.Env):
         if num_proposals != len(new_tl_ids):
             raise ValueError(f"Number of proposals ({num_proposals}) does not match the number of traffic light IDs ({len(new_tl_ids)}, {new_tl_ids})")
         
+        new_tl_ids.sort(key=lambda tid: (traci.junction.getPosition(tid)[0], tid))
         self.tl_ids.extend(new_tl_ids)
         self.junction_pos_cache = {jid: traci.junction.getPosition(jid) for jid in self.tl_ids}
 
@@ -1460,11 +1470,10 @@ class ControlEnv(gym.Env):
         # Warmup period
         # How many actions to take during warmup
         warmup = random.randint(self.warmup_steps[0], self.warmup_steps[1])
-        num_actions_warmup = warmup // self.steps_per_action
+        num_actions_warmup = int(warmup // self.action_duration)
         #print(f"Number of actions during warmup: {num_actions_warmup}")
         observation_buffer = []
         for i in range(num_actions_warmup):
-            self._update_pedestrian_existence_times()
 
             # Randomly sample actions (1 digit for intersection, the rest of the bits for mid-block crosswalks)
             action = np.concatenate([np.random.randint(4, size=1), np.random.randint(2, size= len(self.tl_ids) - 1)]).astype(np.int32)
@@ -1478,20 +1487,29 @@ class ControlEnv(gym.Env):
                 for j in range(self.steps_per_action):
                     current_phase = [1]*len(self.tl_ids) # random phase
                     traci.simulationStep() 
+                    self._update_pedestrian_existence_times()
                     obs = self._get_observation(current_phase)
                     # _ = self._get_pressure_dict(self.corrected_occupancy_map)
                     observation_buffer.append(obs)
+                    self._get_pedestrian_arrival_times()
                     # No reward calculation
                     # self.step_count += 1 # We are not counting the warmup steps in the total simulation steps
             else: 
                 for j in range(self.steps_per_action):
                     current_phase = self._apply_action(action, j, switch_state)
                     traci.simulationStep() 
+                    self._update_pedestrian_existence_times()
                     obs = self._get_observation(current_phase)
                     # _ = self._get_pressure_dict(self.corrected_occupancy_map)
                     observation_buffer.append(obs)
+                    self._get_pedestrian_arrival_times()
                     # No reward calculation
                     # self.step_count += 1 # We are not counting the warmup steps in the total simulation steps
+
+            prev_action = action
+
+        if not tl:
+            self.previous_action = prev_action
 
         # print(f"\n{warmup} steps of warmup ended.")
         observation_buffer = observation_buffer[-self.steps_per_action:] # Only keep the observation of thelast action
@@ -1499,8 +1517,10 @@ class ControlEnv(gym.Env):
         #print(f"\nObservation (in reset): {observation.shape}")
 
         # reset the waiting times
-        self.prev_vehicle_waiting_time = {}
-        self.prev_ped_waiting_time = {}
+        self.prev_vehicle_waiting_time = {vid: traci.vehicle.getWaitingTime(vid)
+                                          for vid in traci.vehicle.getIDList()}
+        self.prev_ped_waiting_time = {pid: traci.person.getWaitingTime(pid)
+                                    for pid in traci.person.getIDList()}
         self.total_conflicts = 0 # Running total of unique vehicle-pedestrian conflicts
         self.total_switches = 0 # Only applicable for RL.
 
@@ -1774,7 +1794,7 @@ class ControlEnv(gym.Env):
         """
         for ped_id in traci.person.getIDList():
             if ped_id not in self.pedestrian_existence_times:
-                self.pedestrian_existence_times[ped_id] = 1 * self.step_length
+                self.pedestrian_existence_times[ped_id] = 0.0
             else:
                 self.pedestrian_existence_times[ped_id] += 1 * self.step_length
     

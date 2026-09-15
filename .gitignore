@@ -26,6 +26,7 @@ runs/baselines_experiment/rl_control_baseline/*
 runs/readout_32/*
 !runs/readout_32/May09_11-34-05/
 runs/readout_32/May09_11-34-05/*
+!runs/readout_32/May09_11-34-05/config.json
 !runs/readout_32/May09_11-34-05/saved_policies/
 runs/readout_32/May09_11-34-05/saved_policies/*
 !runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth

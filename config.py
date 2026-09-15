@@ -78,8 +78,7 @@ def get_config():
         "lower_action_dim": None, # will be set later
         "lower_in_channels": 1, # in_channels for cnn
         "lower_activation": "tanh",  # Policy activation function
-        "lower_max_timesteps": 360,  # Maximum number of steps in one episode (make this multiple of 16*10)
-        "lower_memory_transfer_freq": 16,  # Frequency of memory transfer from worker to main process 
+        "lower_max_timesteps": 360,  # Maximum number of simulation steps in one episode
         "lower_per_timestep_state_dim": 11 + 32 + 8 * 10,  # Number of features per timestep (corresponding to max_proposals = 10), calculation in _get_observation function.
         "lower_step_length": 1.0,  # Real-world time in seconds per simulation timestep (default: 1.0). 
         "lower_action_duration": 10,  # Number of simulation timesteps for each action (default: 10)
@@ -132,7 +131,6 @@ def classify_and_return_args(train_config, device):
         'max_timesteps': train_config['lower_max_timesteps'],
         'demand_scale_min': train_config['demand_scale_min'],
         'demand_scale_max': train_config['demand_scale_max'],
-        'memory_transfer_freq': train_config['lower_memory_transfer_freq'],
         'max_proposals': train_config['max_proposals'],
         'total_action_timesteps_per_episode': None,
         'lower_num_processes': train_config['lower_num_processes'],
