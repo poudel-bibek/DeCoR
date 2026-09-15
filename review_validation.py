@@ -288,18 +288,72 @@ def cohort_summary(due, entries, kind, end_time):
     return result
 
 
-def prepare(destination):
+def completed_training_reference(path):
+    """Read an immutable training endpoint, not a newly decoded or selected design."""
+    path = Path(path).resolve()
+    artifact_bytes = path.read_bytes()
+    record = json.loads(artifact_bytes)
+    if record.get("complete") is not True:
+        raise ValueError("The training artifact must contain a completed arm.")
+    study_path = path.parents[2] / "study.json"
+    study_bytes = study_path.read_bytes()
+    study = json.loads(study_bytes)
+    if study["settings"]["development"]:
+        raise ValueError("Development artifacts are training-only gates, not held-out baseline references.")
+    if record["seed"] not in study["seeds"] or record["source_hashes"] != study["source_hashes"]:
+        raise ValueError("Training artifact provenance does not match its declared study.")
+    if not study["evaluation_scales"] or not study["evaluation_seeds"]:
+        raise ValueError("The training study must declare held-out scales and seeds.")
+    if digest(record["checkpoint"]) != record["checkpoint_sha256"]:
+        raise ValueError("The completed training checkpoint does not match its recorded hash.")
+    layout = record["layout"]
+    if digest(layout["network"]) != layout["sha256"]:
+        raise ValueError("The completed training layout does not match its recorded hash.")
+    count, slots = layout["num_proposals"], layout["signal_slots"]
+    proposals = np.asarray(layout["proposals"], dtype=np.float32)
+    if proposals.shape != (count, 2) or not np.isfinite(proposals).all():
+        raise ValueError("Recorded layout proposals must match its crossing count.")
+    limit = record["configuration"]["design_args"]["max_proposals"]
+    if (len(slots) != count or len(layout["crossing_ids"]) != count
+            or set(slots) != {f"{cid}_mid" for cid in layout["crossing_ids"]}
+            or set(slots) != set(signal_slots_from_network(layout["network"], INTERSECTION))
+            or any(not isinstance(slot, int) or not 0 <= slot < limit for slot in slots.values())
+            or len(set(slots.values())) != count):
+        raise ValueError("Recorded crossing identities and slots do not match the compiled final layout.")
+    provenance = {"path": str(path), "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+                  "study": str(study_path), "study_sha256": hashlib.sha256(study_bytes).hexdigest(),
+                  "arm": record["arm"], "seed": record["seed"], "settings": study["settings"],
+                  "source_hashes": record["source_hashes"]}
+    return record, study, provenance
+
+
+def prepare(destination, training_artifact=None):
     destination = Path(destination).resolve()
     if (destination / "manifest.json").exists():
         raise FileExistsError("Use a fresh destination or the existing manifest.")
     destination.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(1)
     torch.manual_seed(20260914)
-    d, ctrl, higher, lower = arguments()
+    reference = study = provenance = None
+    checkpoint_path = CHECKPOINT
+    if training_artifact is not None:
+        reference, study, provenance = completed_training_reference(training_artifact)
+        checkpoint_path = Path(reference["checkpoint"])
+    d, ctrl, higher, lower = arguments(reference["configuration"] if reference is not None else None)
+    if reference is not None:
+        # Scientific inputs come from the training snapshot; evaluator source bytes are independent.
+        snapshot = Path(provenance["study"]).parent / "source_snapshot"
+        for args, key in ((d, "original_net_file"), (ctrl, "vehicle_input_trips"), (ctrl, "pedestrian_input_trips")):
+            name = str(Path(args[key]))
+            source = (snapshot / name).resolve()
+            if digest(source) != reference["source_hashes"].get(name):
+                raise ValueError(f"Training input does not match its recorded hash: {name}")
+            args[key] = str(source)
+        ctrl.update(vehicle_output_trips=str(destination / "vehicles.xml"),
+                    pedestrian_output_trips=str(destination / "pedestrians.xml"))
     d["save_dir"] = str(destination / "geometry")
     higher["model_kwargs"]["run_dir"] = d["save_dir"]
-    env = DesignEnv(d, ctrl, lower, d["save_dir"])
-    checkpoint = torch.load(CHECKPOINT, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     control_version = checkpoint["lower"].get("observation_version", 1)
     active_arms = ["fixed", "actuated", "tuned_fixed"]
     skip_reason = None
@@ -308,8 +362,13 @@ def prepare(destination):
     else:
         skip_reason = (f"Learned control is disabled: checkpoint observation version {control_version} "
                        f"is incompatible with version {MLP_ActorCritic.observation_version}. Fresh training is required.")
+    if reference is not None:
+        active_arms = ["actuated"]
+        skip_reason = "Placement baselines use common actuated control, not learned-policy performance."
     policy = PPO(**higher).policy
-    env.normalizer_x, env.normalizer_y = load_design_policy(policy, checkpoint["higher"])
+    norm_x, norm_y = load_design_policy(policy, checkpoint["higher"])
+    env = DesignEnv(d, ctrl, lower, d["save_dir"])
+    env.normalizer_x, env.normalizer_y = norm_x, norm_y
     state = env.reset()
     original_network = Path(env.network_dir) / "network_iteration_0.net.xml"
     original_slots = signal_slots_from_network(original_network, INTERSECTION)
@@ -318,46 +377,52 @@ def prepare(destination):
                 "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
                 "crossing_ids": [tid.removesuffix("_mid") for tid in original_slots],
                 "signal_slots": original_slots}
-    policy.eval()
-    with torch.no_grad():
-        gmm = policy.get_gmm_distribution(Batch.from_data_list([state]), "cpu")[0]
-        _, merged, count, _ = policy.act(state, None, d["clamp_min"], d["clamp_max"], "cpu", training=False)
-        proposals = merged[0, :int(count.item())].numpy()
-        counts = Counter()
-        for _ in range(1000):
-            _, _, n, _ = policy.act(state, None, d["clamp_min"], d["clamp_max"], "cpu", training=True)
-            counts[int(n.item())] += 1
-    span = env.normalizer_x["max"] - env.normalizer_x["min"]
+    diagnostics = {}
+    if reference is None:
+        policy.eval()
+        with torch.no_grad():
+            gmm = policy.get_gmm_distribution(Batch.from_data_list([state]), "cpu")[0]
+            _, merged, count, _ = policy.act(state, None, d["clamp_min"], d["clamp_max"], "cpu", training=False)
+            proposals = merged[0, :int(count.item())].numpy()
+            counts = Counter()
+            for _ in range(1000):
+                _, _, n, _ = policy.act(state, None, d["clamp_min"], d["clamp_max"], "cpu", training=True)
+                counts[int(n.item())] += 1
+        env._apply_action(proposals, "review")
+        learned = {"network": str(Path(env.current_net_file_path).resolve()),
+                   "iteration": "review", "num_proposals": len(proposals), "real_world": False,
+                   "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
+                   "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots)}
+        span = env.normalizer_x["max"] - env.normalizer_x["min"]
+        diagnostics = {"sigma_normalized": float(np.exp(-2.5)), "sigma_location_m": float(np.exp(-2.5)*span),
+                       "sigma_width_m": float(np.exp(-2.5)*13), "merge_location_m": 0.08*span,
+                       "mixture_means": gmm.component_distribution.mean.tolist(),
+                       "mixture_probabilities": gmm.mixture_distribution.probs.tolist(),
+                       "training_sample_merged_counts_1000_draws": dict(sorted(counts.items())),
+                       "sampling_diagnostic": "Frozen checkpoint conditioned on the original graph, seed 20260914; not historical training counts."}
+    else:
+        learned = copy.deepcopy(reference["layout"])
+        proposals = np.asarray(learned["proposals"], dtype=np.float32)
     physical = physical_proposals(proposals, env.normalizer_x, d)
-    env._apply_action(proposals, "review")
-    learned = {"network": str(Path(env.current_net_file_path).resolve()),
-               "iteration": "review", "num_proposals": len(proposals), "real_world": False,
-               "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
-               "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots)}
-    for layout in (original, learned):
+    for layout in ((original, learned) if reference is None else (original,)):
         layout["network"] = str(Path(layout["network"]).resolve())
         layout["sha256"] = digest(layout["network"])
-    manifest = {"checkpoint": str(CHECKPOINT), "checkpoint_sha256": digest(CHECKPOINT),
+    manifest = {"checkpoint": str(checkpoint_path),
+                "checkpoint_sha256": reference["checkpoint_sha256"] if reference is not None else digest(checkpoint_path),
                 "observation_version": MLP_ActorCritic.observation_version,
                 "checkpoint_control_version": control_version, "active_arms": active_arms,
                 "learned_control_skip_reason": skip_reason,
                 "configuration": dict(design_args=d, control_args=ctrl,
                                       higher_ppo_args=higher, lower_ppo_args=lower),
-                "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "source_hashes": {p: digest(ROOT / p) for p in [
                     "ppo/models.py", "ppo/ppo.py", "ppo/ppo_utils.py", "simulation/control_env.py",
                     "simulation/design_env.py", "simulation/worker.py", "simulation/env_utils.py",
                     "simulation/sim_setup.py", "utils.py", "review_validation.py", "uv.lock",
                     ctrl["vehicle_input_trips"], ctrl["pedestrian_input_trips"]]},
                 "layouts": {"original": original, "learned": learned},
-                "normalizer_x": env.normalizer_x,
-                "sigma_normalized": float(np.exp(-2.5)), "sigma_location_m": float(np.exp(-2.5)*span),
-                "sigma_width_m": float(np.exp(-2.5)*13), "merge_location_m": 0.08*span,
-                "mixture_means": gmm.component_distribution.mean.tolist(),
-                "mixture_probabilities": gmm.mixture_distribution.probs.tolist(),
-                "evaluation_proposals": physical,
-                "training_sample_merged_counts_1000_draws": dict(sorted(counts.items())),
-                "sampling_diagnostic": "Frozen checkpoint conditioned on the original graph, seed 20260914; not historical training counts.",
+                "normalizer_x": env.normalizer_x, "normalizer_y": env.normalizer_y,
+                "evaluation_proposals": physical, **diagnostics,
                 "protocol": {"warmup": "same fixed-time program for every arm; seeded 40-140 s, rounded down to 10 s",
                              "measurement_horizon_s": 450,
                              "demand": "Compression and repetition with horizon filtering; training [0,2400), evaluation [2400,3600). Report realized counts for nonuniform demand.",
@@ -365,10 +430,21 @@ def prepare(destination):
                              "measurement": "Environment and independent telemetry both accumulate 1 s waiting increments during the measurement period. Tripinfo retains complete and unfinished journeys including warmup.",
                              "actuated": "Intersection gap actuation with 10-45 s greens; mid-block pedestrian request, 10 s minimum vehicle green, original 4/16/2 s transition/pedestrian phases.",
                              "tuned_fixed": "Select symmetric intersection/mid-block vehicle greens using training-window trials only; retain all other phase durations."}}
+    if reference is not None:
+        manifest.update(training_artifact=provenance,
+                        evaluation_scales=study["evaluation_scales"], evaluation_seeds=study["evaluation_seeds"],
+                        journey_protocol=study["journey_protocol"])
+        manifest["source_hashes"][provenance["path"]] = provenance["sha256"]
+        manifest["source_hashes"][d["original_net_file"]] = digest(d["original_net_file"])
+        manifest["protocol"].update(
+            warmup=f"Common fixed-time warmup for every placement, {study['journey_protocol']['warmup_s']} s.",
+            learned_control=skip_reason,
+            reference="The completed training endpoint is reused without policy sampling or held-out selection.",
+            measurement=f"Declared finite cohort {study['journey_protocol']}; compare these common-actuated rows together, not against random-warmup learned-policy results.")
     save(destination / "manifest.json", manifest)
     if skip_reason:
         print(skip_reason)
-    print(json.dumps({k: manifest[k] for k in ["sigma_location_m", "merge_location_m", "evaluation_proposals", "training_sample_merged_counts_1000_draws"]}, indent=2))
+    print(json.dumps({k: manifest[k] for k in ["evaluation_proposals", "training_sample_merged_counts_1000_draws"] if k in manifest}, indent=2))
 
 
 class Telemetry(traci.StepListener):
@@ -681,11 +757,15 @@ def main():
                              "search: count/width-matched Uniform and best-of-20 random placements selected on training trials; "
                              "matrix: held-out rows, including baseline layouts once searched")
     parser.add_argument("directory", type=Path)
+    parser.add_argument("--training-artifact", type=Path,
+                        help="prepare only: completed study/<seed>/<arm>/training.json; reuse its final layout for common-actuated placement baselines")
     args = parser.parse_args()
+    if args.training_artifact is not None and args.operation != "prepare":
+        parser.error("--training-artifact is only valid with prepare")
     os.chdir(ROOT)
     directory = args.directory.resolve()
     if args.operation == "prepare":
-        prepare(directory)
+        prepare(directory, args.training_artifact)
         return
     manifest = directory / "manifest.json"
     metadata = json.loads(manifest.read_text())
@@ -704,6 +784,11 @@ def main():
         print(json.dumps({k: selection[k] for k in ("random_best20", "random_best20_score", "eligible_candidates",
                                                      "failed_or_incomplete_candidates")}), flush=True)
         return
+    if metadata.get("training_artifact"):
+        if args.operation == "tune":
+            raise ValueError("This matched-placement manifest declares actuated control, not fixed-time tuning.")
+        if not (directory / "baselines" / "selection.json").exists():
+            raise ValueError("Freeze baseline selection before evaluating the declared held-out demand.")
     if args.operation == "tune":
         # Training-only selection at 1x and 2x, three seeds. No test feedback.
         variants = [(i, b) for i in (15, 30, 60, 90) for b in (10, 20, 40)]
@@ -715,11 +800,11 @@ def main():
                                          split="training", parameters=[i,b], directory=str(directory/"tuning"/f"{layout}_{i}_{b}_{scale}_{seed}")))
     else:
         arms = [arm for arm in metadata["active_arms"] if arm != "tuned_fixed"]
-        scales = [.5, .75, 1., 1.25, 1.5, 1.75, 2., 2.25, 2.5, 2.75]
-        seeds = range(6100, 6110)
+        scales = metadata.get("evaluation_scales", [.5, .75, 1., 1.25, 1.5, 1.75, 2., 2.25, 2.5, 2.75])
+        seeds = metadata.get("evaluation_seeds", list(range(6100, 6110)))
         if args.operation == "smoke":
-            scales, seeds = [1.0], [6100]
-        else:
+            scales, seeds = [1.0 if 1.0 in scales else scales[0]], [seeds[0]]
+        elif "tuned_fixed" in metadata["active_arms"]:
             arms.append("tuned_fixed")
             selected = json.loads((directory/"selected_timing.json").read_text())
         for layout in ("original", "learned"):

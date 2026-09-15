@@ -7,8 +7,162 @@ from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
 import numpy as np
+from config import classify_and_return_args, get_config
+from utils import save_policy
 
 import review_validation as review
+
+
+class TrainingArtifactPreparationTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(review.torch.random.fork_rng(devices=[]))
+        review.torch.manual_seed(173)
+        self.study_dir = self.folder / "training"
+        self.arm_dir = self.study_dir / "14100" / "joint"
+        self.arm_dir.mkdir(parents=True)
+        snapshot = self.study_dir / "source_snapshot" / "simulation"
+        snapshot.mkdir(parents=True)
+        self.network(snapshot / "Craver_traffic_lights_wide.net.xml", {"west_mid": 20, "east_mid": 80})
+        for name in ("original_vehtrips.xml", "original_pedtrips.xml"):
+            (snapshot / name).write_text("<routes/>")
+        d, ctrl, higher, lower, _ = classify_and_return_args(get_config(), "cpu")
+        d["save_dir"] = str(self.arm_dir)
+        higher["model_kwargs"].update(run_dir=str(self.arm_dir), num_mixtures=2,
+                                      hidden_channels=4, out_channels=4, initial_heads=1,
+                                      second_heads=1, readout_k=3, model_size="small")
+        lower["model_kwargs"]["model_size"] = "small"
+        self.configuration = dict(design_args=d, control_args=ctrl, higher_ppo_args=higher, lower_ppo_args=lower)
+        self.checkpoint = self.arm_dir / "final.pth"
+        save_policy(review.PPO(**higher).policy, review.PPO(**lower).policy,
+                    review.WelfordNormalizer((10, 123)), {"min": 0.0, "max": 100.0},
+                    {"min": -10.0, "max": 10.0}, self.checkpoint, [36] * 10, [1] * 10)
+        self.final_network = self.arm_dir / "network_iteration_481.net.xml"
+        self.network(self.final_network, {"final_east_mid": 80, "final_west_mid": 20})
+        source_hashes = {f"simulation/{name}": review.digest(snapshot / name) for name in
+                         ("Craver_traffic_lights_wide.net.xml", "original_vehtrips.xml", "original_pedtrips.xml")}
+        source_hashes["review_validation.py"] = "0" * 64  # Training source differs from this evaluator.
+        self.record = {"complete": True, "arm": "joint", "seed": 14100,
+                       "configuration": self.configuration, "source_hashes": source_hashes,
+                       "checkpoint": str(self.checkpoint), "checkpoint_sha256": review.digest(self.checkpoint),
+                       "layout": {"network": str(self.final_network), "sha256": review.digest(self.final_network),
+                                  "iteration": 481, "num_proposals": 2, "real_world": False, "extreme_edges": {},
+                                  "proposals": [[0.8, 0.6], [0.2, 0.4]],
+                                  "crossing_ids": ["final_east", "final_west"],
+                                  "signal_slots": {"final_east_mid": 7, "final_west_mid": 2}}}
+        self.study = {"settings": {"development": False, "rounds": 480}, "seeds": [14100, 14200, 14300],
+                      "source_hashes": source_hashes, "evaluation_scales": [.5, 1., 1.75, 2.75],
+                      "evaluation_seeds": [19100, 19101], "journey_protocol": review.JOURNEY_PROTOCOL}
+        self.artifact = self.arm_dir / "training.json"
+        review.save(self.artifact, self.record)
+        review.save(self.study_dir / "study.json", self.study)
+        networks = self.folder / "prepared_networks"
+        networks.mkdir()
+        self.network(networks / "network_iteration_0.net.xml", {"west_mid": 20, "east_mid": 80})
+        self.env = Mock(network_dir=str(networks), extreme_edge_dict={})
+
+    @staticmethod
+    def network(path, signals):
+        root = ET.Element("net")
+        for tid, x in {review.INTERSECTION: 50, **signals}.items():
+            ET.SubElement(root, "junction", id=tid, x=str(x), y="0")
+            ET.SubElement(root, "tlLogic", id=tid, programID="0")
+        ET.ElementTree(root).write(path)
+
+    def prepare(self, destination):
+        with patch.object(review, "DesignEnv", return_value=self.env), patch("builtins.print"):
+            review.prepare(destination, self.artifact)
+        return json.loads((destination / "manifest.json").read_text())
+
+    def test_completed_endpoint_keeps_geometry_and_freezes_distinct_evaluator_inputs(self):
+        destination = self.folder / "baseline"
+        manifest = self.prepare(destination)
+        self.assertEqual(manifest["layouts"]["learned"], self.record["layout"])
+        self.assertEqual(manifest["active_arms"], ["actuated"])
+        self.assertEqual(manifest["training_artifact"]["source_hashes"], self.record["source_hashes"])
+        self.assertEqual(manifest["source_hashes"]["review_validation.py"], review.digest(review.ROOT / "review_validation.py"))
+        np.testing.assert_allclose(review.reference_proposals(manifest), [[.2, .4], [.8, .6]], rtol=1e-6)
+        job = dict(manifest=str(destination / "manifest.json"), layout="learned", arm="actuated",
+                   scale=1., seed=19100, split="evaluation", directory=str(destination / "cached_trial"))
+        result = Path(job["directory"]) / "result.json"
+        review.save(result, {"job": job, "manifest_sha256": review.digest(job["manifest"])})
+        self.assertEqual(review.trial(job), str(result))
+        # Every scientific input and the original recorded configuration remain cache prerequisites.
+        paths = [self.artifact, self.checkpoint, self.final_network,
+                 Path(manifest["configuration"]["design_args"]["original_net_file"]),
+                 Path(manifest["configuration"]["control_args"]["vehicle_input_trips"]),
+                 Path(manifest["configuration"]["control_args"]["pedestrian_input_trips"])]
+        for path in paths:
+            original = path.read_bytes()
+            with self.subTest(input=path.name):
+                try:
+                    path.write_bytes(original + b"\n")
+                    with self.assertRaises(ValueError):
+                        review.trial(job)
+                finally:
+                    path.write_bytes(original)
+
+    def test_incomplete_development_or_mismatched_artifacts_cannot_prepare(self):
+        for fault in ("incomplete", "development", "checkpoint", "network", "slots", "input"):
+            record, study = copy.deepcopy(self.record), copy.deepcopy(self.study)
+            if fault == "incomplete":
+                record["complete"] = False
+            elif fault == "development":
+                study["settings"]["development"] = True
+            elif fault == "checkpoint":
+                record["checkpoint_sha256"] = "1" * 64
+            elif fault == "network":
+                record["layout"]["sha256"] = "1" * 64
+            elif fault == "slots":
+                record["layout"]["signal_slots"]["final_west_mid"] = 7
+            else:
+                record["source_hashes"]["simulation/original_vehtrips.xml"] = "1" * 64
+                study["source_hashes"] = record["source_hashes"]
+            review.save(self.artifact, record)
+            review.save(self.study_dir / "study.json", study)
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                self.prepare(self.folder / fault)
+
+    def test_current_design_with_unused_legacy_control_is_valid_but_old_readout_is_not(self):
+        checkpoint = review.torch.load(self.checkpoint)
+        checkpoint["lower"]["observation_version"] = 1
+        review.torch.save(checkpoint, self.checkpoint)
+        self.record["checkpoint_sha256"] = review.digest(self.checkpoint)
+        review.save(self.artifact, self.record)
+        manifest = self.prepare(self.folder / "unused_control")
+        self.assertEqual(manifest["active_arms"], ["actuated"])
+        self.assertEqual(manifest["checkpoint_control_version"], 1)
+        checkpoint["higher"]["readout_version"] = 1
+        review.torch.save(checkpoint, self.checkpoint)
+        self.record["checkpoint_sha256"] = review.digest(self.checkpoint)
+        review.save(self.artifact, self.record)
+        with self.assertRaisesRegex(ValueError, "readout"):
+            self.prepare(self.folder / "old_readout")
+
+    def test_cli_uses_declared_heldout_only_after_frozen_selection(self):
+        destination = self.folder / "cli_baseline"
+        with patch("sys.argv", ["review_validation.py", "prepare", str(destination),
+                               "--training-artifact", str(self.artifact)]), \
+             patch.object(review, "DesignEnv", return_value=self.env), \
+             patch.object(review.os, "chdir"), patch("builtins.print"):
+            review.main()
+        with patch("sys.argv", ["review_validation.py", "matrix", str(destination)]), \
+             patch.object(review.os, "chdir"), patch("builtins.print"), \
+             patch.object(review, "run_jobs") as run:
+            with self.assertRaises(ValueError):
+                review.main()
+            manifest = json.loads((destination / "manifest.json").read_text())
+            baseline = destination / "baselines" / "manifest.json"
+            review.save(baseline, dict(manifest, layouts={"uniform": self.record["layout"],
+                                                        "random_03": self.record["layout"]}))
+            review.save(destination / "baselines" / "selection.json",
+                        {"manifest_sha256": review.digest(baseline), "uniform": "uniform", "random_best20": "random_03"})
+            review.main()
+        jobs = run.call_args.args[0]
+        self.assertEqual({(job["scale"], job["seed"]) for job in jobs},
+                         {(scale, seed) for scale in self.study["evaluation_scales"] for seed in self.study["evaluation_seeds"]})
+        self.assertEqual({(job["arm"], job["split"]) for job in jobs}, {("actuated", "evaluation")})
+        self.assertEqual({job["layout"] for job in jobs}, {"original", "learned", "uniform", "random_03"})
 
 
 class ReviewConfigurationTest(unittest.TestCase):
