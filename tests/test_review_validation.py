@@ -7,8 +7,162 @@ from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
 import numpy as np
+from config import classify_and_return_args, get_config
+from utils import save_policy
 
 import review_validation as review
+
+
+class TrainingArtifactPreparationTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(review.torch.random.fork_rng(devices=[]))
+        review.torch.manual_seed(173)
+        self.study_dir = self.folder / "training"
+        self.arm_dir = self.study_dir / "14100" / "joint"
+        self.arm_dir.mkdir(parents=True)
+        snapshot = self.study_dir / "source_snapshot" / "simulation"
+        snapshot.mkdir(parents=True)
+        self.network(snapshot / "Craver_traffic_lights_wide.net.xml", {"west_mid": 20, "east_mid": 80})
+        for name in ("original_vehtrips.xml", "original_pedtrips.xml"):
+            (snapshot / name).write_text("<routes/>")
+        d, ctrl, higher, lower, _ = classify_and_return_args(get_config(), "cpu")
+        d["save_dir"] = str(self.arm_dir)
+        higher["model_kwargs"].update(run_dir=str(self.arm_dir), num_mixtures=2,
+                                      hidden_channels=4, out_channels=4, initial_heads=1,
+                                      second_heads=1, readout_k=3, model_size="small")
+        lower["model_kwargs"]["model_size"] = "small"
+        self.configuration = dict(design_args=d, control_args=ctrl, higher_ppo_args=higher, lower_ppo_args=lower)
+        self.checkpoint = self.arm_dir / "final.pth"
+        save_policy(review.PPO(**higher).policy, review.PPO(**lower).policy,
+                    review.WelfordNormalizer((10, 123)), {"min": 0.0, "max": 100.0},
+                    {"min": -10.0, "max": 10.0}, self.checkpoint, [36] * 10, [1] * 10)
+        self.final_network = self.arm_dir / "network_iteration_481.net.xml"
+        self.network(self.final_network, {"final_east_mid": 80, "final_west_mid": 20})
+        source_hashes = {f"simulation/{name}": review.digest(snapshot / name) for name in
+                         ("Craver_traffic_lights_wide.net.xml", "original_vehtrips.xml", "original_pedtrips.xml")}
+        source_hashes["review_validation.py"] = "0" * 64  # Training source differs from this evaluator.
+        self.record = {"complete": True, "arm": "joint", "seed": 14100,
+                       "configuration": self.configuration, "source_hashes": source_hashes,
+                       "checkpoint": str(self.checkpoint), "checkpoint_sha256": review.digest(self.checkpoint),
+                       "layout": {"network": str(self.final_network), "sha256": review.digest(self.final_network),
+                                  "iteration": 481, "num_proposals": 2, "real_world": False, "extreme_edges": {},
+                                  "proposals": [[0.8, 0.6], [0.2, 0.4]],
+                                  "crossing_ids": ["final_east", "final_west"],
+                                  "signal_slots": {"final_east_mid": 7, "final_west_mid": 2}}}
+        self.study = {"settings": {"development": False, "rounds": 480}, "seeds": [14100, 14200, 14300],
+                      "source_hashes": source_hashes, "evaluation_scales": [.5, 1., 1.75, 2.75],
+                      "evaluation_seeds": [19100, 19101], "journey_protocol": review.JOURNEY_PROTOCOL}
+        self.artifact = self.arm_dir / "training.json"
+        review.save(self.artifact, self.record)
+        review.save(self.study_dir / "study.json", self.study)
+        networks = self.folder / "prepared_networks"
+        networks.mkdir()
+        self.network(networks / "network_iteration_0.net.xml", {"west_mid": 20, "east_mid": 80})
+        self.env = Mock(network_dir=str(networks), extreme_edge_dict={})
+
+    @staticmethod
+    def network(path, signals):
+        root = ET.Element("net")
+        for tid, x in {review.INTERSECTION: 50, **signals}.items():
+            ET.SubElement(root, "junction", id=tid, x=str(x), y="0")
+            ET.SubElement(root, "tlLogic", id=tid, programID="0")
+        ET.ElementTree(root).write(path)
+
+    def prepare(self, destination):
+        with patch.object(review, "DesignEnv", return_value=self.env), patch("builtins.print"):
+            review.prepare(destination, self.artifact)
+        return json.loads((destination / "manifest.json").read_text())
+
+    def test_completed_endpoint_keeps_geometry_and_freezes_distinct_evaluator_inputs(self):
+        destination = self.folder / "baseline"
+        manifest = self.prepare(destination)
+        self.assertEqual(manifest["layouts"]["learned"], self.record["layout"])
+        self.assertEqual(manifest["active_arms"], ["actuated"])
+        self.assertEqual(manifest["training_artifact"]["source_hashes"], self.record["source_hashes"])
+        self.assertEqual(manifest["source_hashes"]["review_validation.py"], review.digest(review.ROOT / "review_validation.py"))
+        np.testing.assert_allclose(review.reference_proposals(manifest), [[.2, .4], [.8, .6]], rtol=1e-6)
+        job = dict(manifest=str(destination / "manifest.json"), layout="learned", arm="actuated",
+                   scale=1., seed=19100, split="evaluation", directory=str(destination / "cached_trial"))
+        result = Path(job["directory"]) / "result.json"
+        review.save(result, {"job": job, "manifest_sha256": review.digest(job["manifest"])})
+        self.assertEqual(review.trial(job), str(result))
+        # Every scientific input and the original recorded configuration remain cache prerequisites.
+        paths = [self.artifact, self.checkpoint, self.final_network,
+                 Path(manifest["configuration"]["design_args"]["original_net_file"]),
+                 Path(manifest["configuration"]["control_args"]["vehicle_input_trips"]),
+                 Path(manifest["configuration"]["control_args"]["pedestrian_input_trips"])]
+        for path in paths:
+            original = path.read_bytes()
+            with self.subTest(input=path.name):
+                try:
+                    path.write_bytes(original + b"\n")
+                    with self.assertRaises(ValueError):
+                        review.trial(job)
+                finally:
+                    path.write_bytes(original)
+
+    def test_incomplete_development_or_mismatched_artifacts_cannot_prepare(self):
+        for fault in ("incomplete", "development", "checkpoint", "network", "slots", "input"):
+            record, study = copy.deepcopy(self.record), copy.deepcopy(self.study)
+            if fault == "incomplete":
+                record["complete"] = False
+            elif fault == "development":
+                study["settings"]["development"] = True
+            elif fault == "checkpoint":
+                record["checkpoint_sha256"] = "1" * 64
+            elif fault == "network":
+                record["layout"]["sha256"] = "1" * 64
+            elif fault == "slots":
+                record["layout"]["signal_slots"]["final_west_mid"] = 7
+            else:
+                record["source_hashes"]["simulation/original_vehtrips.xml"] = "1" * 64
+                study["source_hashes"] = record["source_hashes"]
+            review.save(self.artifact, record)
+            review.save(self.study_dir / "study.json", study)
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                self.prepare(self.folder / fault)
+
+    def test_current_design_with_unused_legacy_control_is_valid_but_old_readout_is_not(self):
+        checkpoint = review.torch.load(self.checkpoint)
+        checkpoint["lower"]["observation_version"] = 1
+        review.torch.save(checkpoint, self.checkpoint)
+        self.record["checkpoint_sha256"] = review.digest(self.checkpoint)
+        review.save(self.artifact, self.record)
+        manifest = self.prepare(self.folder / "unused_control")
+        self.assertEqual(manifest["active_arms"], ["actuated"])
+        self.assertEqual(manifest["checkpoint_control_version"], 1)
+        checkpoint["higher"]["readout_version"] = 1
+        review.torch.save(checkpoint, self.checkpoint)
+        self.record["checkpoint_sha256"] = review.digest(self.checkpoint)
+        review.save(self.artifact, self.record)
+        with self.assertRaisesRegex(ValueError, "readout"):
+            self.prepare(self.folder / "old_readout")
+
+    def test_cli_uses_declared_heldout_only_after_frozen_selection(self):
+        destination = self.folder / "cli_baseline"
+        with patch("sys.argv", ["review_validation.py", "prepare", str(destination),
+                               "--training-artifact", str(self.artifact)]), \
+             patch.object(review, "DesignEnv", return_value=self.env), \
+             patch.object(review.os, "chdir"), patch("builtins.print"):
+            review.main()
+        with patch("sys.argv", ["review_validation.py", "matrix", str(destination)]), \
+             patch.object(review.os, "chdir"), patch("builtins.print"), \
+             patch.object(review, "run_jobs") as run:
+            with self.assertRaises(ValueError):
+                review.main()
+            manifest = json.loads((destination / "manifest.json").read_text())
+            baseline = destination / "baselines" / "manifest.json"
+            review.save(baseline, dict(manifest, layouts={"uniform": self.record["layout"],
+                                                        "random_03": self.record["layout"]}))
+            review.save(destination / "baselines" / "selection.json",
+                        {"manifest_sha256": review.digest(baseline), "uniform": "uniform", "random_best20": "random_03"})
+            review.main()
+        jobs = run.call_args.args[0]
+        self.assertEqual({(job["scale"], job["seed"]) for job in jobs},
+                         {(scale, seed) for scale in self.study["evaluation_scales"] for seed in self.study["evaluation_seeds"]})
+        self.assertEqual({(job["arm"], job["split"]) for job in jobs}, {("actuated", "evaluation")})
+        self.assertEqual({job["layout"] for job in jobs}, {"original", "learned", "uniform", "random_03"})
 
 
 class ReviewConfigurationTest(unittest.TestCase):
@@ -19,7 +173,7 @@ class ReviewConfigurationTest(unittest.TestCase):
             for path in inputs:
                 path.write_text('<routes/>')
             configuration = {
-                'design_args': {'clamp_min': 0.01, 'clamp_max': 0.99},
+                'design_args': {'clamp_min': 0.01, 'clamp_max': 0.99, 'min_thickness': 2.0, 'max_thickness': 15.0},
                 'control_args': {'warmup_steps': [40, 140],
                                  'vehicle_input_trips': str(inputs[0]),
                                  'pedestrian_input_trips': str(inputs[1])},
@@ -270,6 +424,165 @@ class ReviewConfigurationTest(unittest.TestCase):
                         env.reset.assert_not_called()
                     else:
                         env.reset.assert_called_once()
+
+
+class MatchedBaselineTest(unittest.TestCase):
+    widths = np.array([0.975, 0.575, 0.05, 0.4875], dtype=np.float32)
+
+    def test_matched_placements_keep_count_widths_and_feasibility(self):
+        uniform = review.uniform_proposals(4, self.widths)
+        np.testing.assert_allclose(uniform[:, 0], [.2, .4, .6, .8], rtol=1e-6)
+        np.testing.assert_array_equal(uniform[:, 1], self.widths)
+        rng = np.random.default_rng(review.GEOMETRY_SEED)
+        for _ in range(review.RANDOM_CANDIDATES):
+            padded, count = review.random_proposals(4, rng, self.widths)
+            self.assertEqual(int(count), 4)
+            np.testing.assert_array_equal(padded[0, :4, 1], self.widths)
+            self.assertGreaterEqual(float(padded[0, :4, 0].min()), .01)
+            self.assertLessEqual(float(padded[0, :4, 0].max()), .99)
+            self.assertTrue(np.all(np.diff(padded[0, :4, 0].numpy()) >= .08 - 1e-6))
+            np.testing.assert_array_equal(padded[0, 4:], -1)
+        # The first location draw does not depend on whether widths are supplied.
+        matched, _ = review.random_proposals(3, np.random.default_rng(7), self.widths[:3])
+        free, _ = review.random_proposals(3, np.random.default_rng(7))
+        np.testing.assert_array_equal(matched[0, :3, 0], free[0, :3, 0])
+        with self.assertRaises(ValueError):
+            review.check_matched(review.uniform_proposals(4, self.widths[::-1]), self.widths)
+        for locations in ([.2, .25, .6, .8], [.0, .4, .6, .8], [.2, .4, .6, .995]):
+            with self.subTest(locations=locations), self.assertRaises(ValueError):
+                review.check_matched(np.column_stack((locations, self.widths)), self.widths)
+
+    def test_baseline_manifest_derives_matched_layouts_from_reference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            networks = folder / 'geometry'
+            networks.mkdir()
+            reference = [[0.85, 0.05], [0.125, 0.975], [0.4, 0.4875], [0.725, 0.575]]  # merged order, not west to east
+            parent = {'configuration': {'design_args': {'min_thickness': 2.0, 'max_thickness': 15.0},
+                                        'control_args': {}, 'higher_ppo_args': {}, 'lower_ppo_args': {}},
+                      'normalizer_x': {'min': 2000.0, 'max': 3000.0},
+                      'layouts': {'learned': {'num_proposals': 4}},
+                      'evaluation_proposals': [{'normalized': p} for p in reference]}
+            manifest = folder / 'manifest.json'
+            manifest.write_text(json.dumps(parent))
+            applied = []
+            env = Mock(extreme_edge_dict={'leftmost': {'old': 'a', 'new': None}})
+
+            def apply(proposals, iteration):
+                applied.append((iteration, np.array(proposals, dtype=np.float32)))
+                path = networks / f'network_iteration_{iteration}.net.xml'
+                path.write_text(f'<net id="{iteration}"/>')
+                env.current_net_file_path = str(path)
+                env.crossing_ids = [f'iter{iteration}_{i}' for i in range(len(proposals))]
+                env.signal_slots = {f'{cid}_mid': i for i, cid in enumerate(env.crossing_ids)}
+            env._apply_action.side_effect = apply
+            with patch.object(review, 'DesignEnv', return_value=env):
+                path = review.baseline_manifest(folder)
+                self.assertEqual(review.baseline_manifest(folder), path)  # Reused, not rebuilt.
+            derived = json.loads(path.read_text())
+            self.assertEqual(derived['parent_manifest_sha256'], review.digest(manifest))
+            names = ['uniform'] + [f'random_{i:02d}' for i in range(20)]
+            self.assertEqual([name for name, _ in applied], names)
+            self.assertEqual(list(derived['layouts']), names)
+            widths = np.array([0.975, 0.4875, 0.575, 0.05], dtype=np.float32)  # reference widths west to east
+            for name, proposals in applied:
+                with self.subTest(layout=name):
+                    np.testing.assert_array_equal(proposals[:, 1], widths)
+                    layout = derived['layouts'][name]
+                    self.assertEqual((layout['num_proposals'], layout['iteration'], layout['real_world']), (4, name, False))
+                    self.assertEqual(layout['sha256'], review.digest(layout['network']))
+                    self.assertEqual([p['normalized'] for p in layout['proposals']], proposals.tolist())
+                    self.assertEqual(len(layout['signal_slots']), 4)
+            np.testing.assert_allclose(applied[0][1][:, 0], [.2, .4, .6, .8], rtol=1e-6)
+            search = derived['baseline_search']
+            self.assertEqual(search['crossing_count'], 4)
+            np.testing.assert_allclose([p['x'] for p in search['reference_proposals']], [2125, 2400, 2725, 2850], rtol=1e-6)
+            parent['layouts']['learned']['num_proposals'] = 5
+            manifest.write_text(json.dumps(parent))
+            with self.assertRaises(ValueError):
+                review.baseline_manifest(folder)
+
+    def test_search_selects_lowest_complete_training_score_and_retains_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {f'random_{i:02d}': {'sha256': f'sha{i}', 'proposals': [[i, 0.5]]}
+                                               for i in range(20)}})
+            jobs = review.search_jobs(folder, manifest)
+            self.assertEqual(len(jobs), 120)
+            self.assertEqual({(j['arm'], j['split']) for j in jobs}, {('actuated', 'training')})
+            self.assertEqual({(j['scale'], j['seed']) for j in jobs},
+                             {(s, d) for s in (1., 2.) for d in (5100, 5101, 5102)})
+            # Score equals the index, except: 00 scores 20, 01 and 02 tie at 1; 05 has the lowest partial scores but one
+            # failed trial; 07 lacks one result. Zero scheduled pedestrians exercise the max(scheduled, 1) rule.
+            failures = {}
+            for job in jobs:
+                index = int(job['layout'][-2:])
+                if index == 5 and (job['scale'], job['seed']) == (2., 5102):
+                    failures[job['directory']] = 'RuntimeError: SUMO aborted'
+                    continue
+                if index == 7 and (job['scale'], job['seed']) == (1., 5100):
+                    continue
+                score = {0: 20, 2: 1, 5: 0}.get(index, index)
+                traffic = {'vehicle': {'wait_sum_1s': score * 10, 'backlog_age_at_end_s': 0, 'scheduled': 10},
+                           'pedestrian': {'wait_sum_1s': 0, 'backlog_age_at_end_s': 0, 'scheduled': 0}}
+                review.save(Path(job['directory']) / 'result.json', {'traffic': traffic})
+            selection = review.select_baseline(folder, manifest, jobs, failures)
+            self.assertEqual((selection['random_best20'], selection['random_best20_network_sha256'],
+                              selection['random_best20_score']), ('random_01', 'sha1', 1))
+            self.assertEqual((selection['eligible_candidates'], selection['failed_or_incomplete_candidates']), (18, 2))
+            candidates = {c['layout']: c for c in selection['candidates']}
+            self.assertEqual(len(candidates), 20)
+            self.assertEqual((candidates['random_05']['eligible'], candidates['random_05']['score']), (False, None))
+            self.assertEqual([t['error'] for t in candidates['random_05']['trials'] if 'error' in t], ['RuntimeError: SUMO aborted'])
+            self.assertEqual([t['error'] for t in candidates['random_07']['trials'] if 'error' in t], ['missing result'])
+            self.assertEqual(len(candidates['random_07']['trials']), 6)
+            self.assertEqual(candidates['random_02']['score'], 1)
+            self.assertEqual(json.loads((folder / 'baselines' / 'selection.json').read_text()), selection)
+            frozen = (folder / 'baselines' / 'selection.json').read_bytes()
+            with self.assertRaises(FileExistsError):
+                review.select_baseline(folder, manifest, jobs, {j['directory']: 'lost' for j in jobs})
+            self.assertEqual((folder / 'baselines' / 'selection.json').read_bytes(), frozen)
+
+    def test_failed_search_retains_every_outcome_without_evaluation_winner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {f'random_{i:02d}': {'sha256': f'sha{i}', 'proposals': [[i, 0.5]]}
+                                               for i in range(20)}})
+            jobs = review.search_jobs(folder, manifest)
+            failures = {job['directory']: 'RuntimeError: SUMO aborted' for job in jobs}
+            with self.assertRaises(RuntimeError):
+                review.select_baseline(folder, manifest, jobs, failures)
+            result = json.loads((folder / 'baselines' / 'selection.json').read_text())
+            self.assertIsNone(result['random_best20'])
+            self.assertEqual(result['eligible_candidates'], 0)
+            self.assertEqual({candidate['layout'] for candidate in result['candidates']},
+                             {f'random_{i:02d}' for i in range(20)})
+            for candidate in result['candidates']:
+                self.assertFalse(candidate['eligible'])
+                self.assertEqual({(trial['scale'], trial['seed']) for trial in candidate['trials']},
+                                 {(scale, seed) for scale in (1., 2.) for seed in (5100, 5101, 5102)})
+                self.assertTrue(all(trial['error'] == 'RuntimeError: SUMO aborted' for trial in candidate['trials']))
+            with self.assertRaises(RuntimeError):
+                review.baseline_rows(folder, [1.], [6100])
+
+    def test_baseline_rows_use_frozen_winner_on_held_out_split(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            self.assertEqual(review.baseline_rows(folder, [1.0], [6100]), [])
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {}})
+            review.save(folder / 'baselines' / 'selection.json',
+                        {'manifest_sha256': review.digest(manifest), 'uniform': 'uniform', 'random_best20': 'random_11'})
+            rows = review.baseline_rows(folder, [1.0, 2.0], [6100])
+            self.assertEqual([(r['layout'], r['scale'], r['seed']) for r in rows],
+                             [('uniform', 1.0, 6100), ('uniform', 2.0, 6100), ('random_11', 1.0, 6100), ('random_11', 2.0, 6100)])
+            self.assertEqual({(r['arm'], r['split'], r['manifest']) for r in rows}, {('actuated', 'evaluation', str(manifest))})
+            self.assertEqual(rows[2]['directory'], str(folder / 'trials' / 'random_best20_actuated_1.0_6100'))
+            review.save(manifest, {'layouts': {'changed': True}})
+            with self.assertRaises(ValueError):
+                review.baseline_rows(folder, [1.0], [6100])
 
 
 class JourneyCohortTest(unittest.TestCase):

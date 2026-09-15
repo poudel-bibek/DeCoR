@@ -121,6 +121,19 @@ runs/<run_name>/results/eval_<timestamp>/<checkpoint>_ppo.json
 
 Paper comparison results are included under `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` for real-world unsignalized, DeCoR unsignalized, DeCoR fixed-time, and DeCoR control settings.
 
+#### Placement-matched baselines
+
+Prepare from a completed, non-development `training.json` with the current design readout (version 2). Keep the parent study's `study.json` and `source_snapshot/`, plus the recorded checkpoint and final network, available. Replace the example paths below; the destination must be fresh.
+
+```bash
+uv run python review_validation.py prepare runs/matched_baselines/14100 \
+    --training-artifact runs/completed_study/14100/joint/training.json
+uv run python review_validation.py search runs/matched_baselines/14100
+uv run python review_validation.py matrix runs/matched_baselines/14100
+```
+
+This path uses common actuated control for the original, recorded final, Uniform, and best-of-20 random layouts. Only placement varies: crossing count and west-to-east widths match the recorded final layout. `search` runs all 120 training-window selection trials (20 candidates, two scales, three seeds), retains failures, and freezes selection before `matrix` evaluates the study's declared held-out demand. Training provenance is preserved separately from the frozen evaluator sources and inputs. These rows are separate from learned-policy evaluation and random-layout controller training.
+
 ### 📝 Code Structure
 
 ```text
