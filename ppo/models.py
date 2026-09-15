@@ -13,11 +13,12 @@ from torch.distributions import MixtureSameFamily, MultivariateNormal, Categoric
 from .ppo_utils import gmm_entropy_monte_carlo, gmm_entropy_legendre
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     """
-    Orthogoal initialization of weights and Constant initialization of biases.
+    Orthogonal weights; bias_const=None preserves the layer's initialized bias.
     https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
     """
     nn.init.orthogonal_(layer.weight, std)
-    nn.init.constant_(layer.bias, bias_const)
+    if bias_const is not None:
+        nn.init.constant_(layer.bias, bias_const)
     return layer
 
 class MLP_ActorCritic(nn.Module):
@@ -56,20 +57,21 @@ class MLP_ActorCritic(nn.Module):
         # actor
         actor_layers = []
         input_size_actor = self.input_dim
+        # Preserve hidden bias variance so cold-start zeros do not amplify through LayerNorm.
         for h in actor_hidden_sizes:
-            actor_layers.append(layer_init(nn.Linear(input_size_actor, h)))
+            actor_layers.append(layer_init(nn.Linear(input_size_actor, h), bias_const=None))
             actor_layers.append(nn.LayerNorm(h))  # Add LayerNorm after linear layer
             actor_layers.append(activation())
             # actor_layers.append(nn.Dropout(dropout_rate)) # Disabled for now
             input_size_actor = h
         self.actor_layers = nn.Sequential(*actor_layers)
-        self.actor_logits = layer_init(nn.Linear(input_size_actor, action_dim)) # Last layer, no activation
+        self.actor_logits = layer_init(nn.Linear(input_size_actor, action_dim), std=0.01)
 
         # critic 
         critic_layers = []
         input_size_critic = self.input_dim
         for h in critic_hidden_sizes:
-            critic_layers.append(layer_init(nn.Linear(input_size_critic, h)))
+            critic_layers.append(layer_init(nn.Linear(input_size_critic, h), bias_const=None))
             critic_layers.append(nn.LayerNorm(h))  # Add LayerNorm after linear layer
             critic_layers.append(activation())
             # critic_layers.append(nn.Dropout(dropout_rate)) # Disabled for now

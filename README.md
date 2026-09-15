@@ -83,6 +83,8 @@ Training writes a timestamped run folder under `runs/<timestamp>/`, including `c
 
 Controller updates report sampled and exact KL divergence, clipping fraction, maximum absolute log ratio, and pre-update likelihood agreement over the complete collected rollout, respecting each transition's sparse action mask. `lower_approx_kl` no longer describes only the final minibatch. These diagnostics are recorded by both training entrypoints; the standard entrypoint also sends them to TensorBoard or Weights & Biases.
 
+New controllers retain the hidden layers' random biases and initialize the actor output weights with gain `0.01`. This avoids amplified cold-start responses to zero-normalized observations through stacked LayerNorm and starts action probabilities near uniform. Only fresh initialization changes: the architecture, observation version 3, and predictions from loaded saved weights remain unchanged. Record new initial policy hashes when restarting a study.
+
 The controller defaults are LR `1e-4`, two PPO epochs, and batch size `1080`, matching three complete ten-worker rounds of 36 decisions. These settings reduce policy change in an identical-batch training diagnostic; they are not evidence of convergence or better traffic performance. Validate new studies with full-rollout controller and design gates, preserve failed attempts, and keep tuning separate from held-out evaluation.
 
 To monitor TensorBoard:
