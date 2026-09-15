@@ -17,7 +17,8 @@ def parallel_train_worker(rank,
                          worker_device, 
                          network_iteration,
                          current_net_file_path,
-                         fixed_control=False):
+                         fixed_control=False,
+                         signal_slots=None):
     """
     At every iteration, a number of workers will each parallelly carry out one episode in control environment.
     - Worker environment runs in CPU (SUMO runs in CPU).
@@ -39,7 +40,8 @@ def parallel_train_worker(rank,
     local_memory = None if fixed_control else Memory()
 
     try:
-        state, _ = worker_env.reset(extreme_edge_dict, num_proposals, tl=fixed_control, eval_mode=False)
+        state, _ = worker_env.reset(extreme_edge_dict, num_proposals, tl=fixed_control, eval_mode=False,
+                                    signal_slots=signal_slots)
         ep_reward = 0
         executed_decisions = 0
 
@@ -53,13 +55,15 @@ def parallel_train_worker(rank,
                 with torch.no_grad():
                     state = lower_state_normalizer.normalize(state)
                     state = state.to(worker_device)
-                    action, logprob = shared_policy_old.act(state, num_proposals) # sim runs in CPU, state will initially always be in CPU.
+                    action, logprob = shared_policy_old.act(state, num_proposals, active_slots=worker_env.active_slots)
                     value = shared_policy_old.critic(state.unsqueeze(0)) # add a batch dimension
 
                     state = state.detach().cpu().numpy() # 2D
                     action = action.detach().cpu().numpy() # 1D
                     # print(f"Action: {action}")
-                    padded_action = np.pad(action, (0, 1 + max_proposals - action.shape[0]), constant_values=-1)
+                    padded_action = np.full(1 + max_proposals, -1, dtype=np.int32)
+                    padded_action[0] = action[0]
+                    padded_action[1 + worker_env.active_slots] = action[1:]
                     # print(f"Padded action: {padded_action}")
                     value = value.item() # Scalar
                     logprob = logprob.item() # Scalar
@@ -119,7 +123,9 @@ def parallel_eval_worker(rank,
     if not steps_per_action.is_integer():
         raise ValueError('Evaluation action duration must be an integer multiple of step length.')
     control_args['max_timesteps'] = requested_decisions * int(steps_per_action)
-    shared_policy = eval_worker_config['lower_policy']
+    tl = tl or unsignalized
+    learned_control = not tl
+    shared_policy = eval_worker_config['lower_policy'] if learned_control else None
     worker_result = {} # results dict 
     
     # We set the demand manually (so that automatic scaling does not happen)
@@ -138,12 +144,14 @@ def parallel_eval_worker(rank,
             torch.cuda.manual_seed_all(SEED)
 
         worker_result[i]['SEED'] = SEED
-        worker_device = eval_worker_config['worker_device']
-        lower_state_normalizer = eval_worker_config['lower_state_normalizer']
+        if learned_control:
+            worker_device = eval_worker_config['worker_device']
+            lower_state_normalizer = eval_worker_config['lower_state_normalizer']
 
         # Run the worker (reset includes warmup)
         env = ControlEnv(control_args, eval_worker_config['run_dir'], worker_id=rank, network_iteration=eval_worker_config['network_iteration'], current_net_file_path=current_net_file_path)
-        state, _ = env.reset(extreme_edge_dict, eval_worker_config['num_proposals'], tl = tl, real_world=real_world, eval_mode=True)
+        state, _ = env.reset(extreme_edge_dict, eval_worker_config['num_proposals'], tl=tl, real_world=real_world,
+                            eval_mode=True, signal_slots=eval_worker_config.get('signal_slots'))
         veh_waiting_time_this_episode = 0
         ped_waiting_time_this_episode = 0
         veh_unique_ids_this_episode = 0
@@ -151,12 +159,15 @@ def parallel_eval_worker(rank,
 
         with torch.no_grad():
             for _ in range(requested_decisions):
-                state = torch.FloatTensor(state)
-                state = lower_state_normalizer.normalize(state)
-                state = state.to(worker_device)
-
-                action, _ = shared_policy.act(state, eval_worker_config['num_proposals'], training=False) # Pass training=False for deterministic eval
-                action = action.detach().cpu() # sim runs in CPU
+                if learned_control:
+                    state = torch.FloatTensor(state)
+                    state = lower_state_normalizer.normalize(state)
+                    state = state.to(worker_device)
+                    action, _ = shared_policy.act(state, eval_worker_config['num_proposals'], training=False,
+                                                  active_slots=env.active_slots)
+                    action = action.detach().cpu()
+                else:
+                    action = np.zeros(eval_worker_config['num_proposals'] + 1, dtype=np.int32)
                 state, _, done, truncated, info = env.eval_step(action, tl, unsignalized=unsignalized)
                 veh_waiting_time_this_episode += info['vehicle_wait']
                 ped_waiting_time_this_episode += info['pedestrian_wait']

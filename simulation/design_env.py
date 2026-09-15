@@ -94,6 +94,8 @@ class DesignEnv(gym.Env):
         self.global_step = 0
         self.action_timesteps = 0 # keep track of how many times action has been taken by all lower level workers
         self.lower_update_count = 0
+        self.control_head_decisions = np.zeros(self.max_proposals, dtype=np.int64)
+        self.control_head_updates = np.zeros(self.max_proposals, dtype=np.int64)
         self.total_updates_lower = None
         self.model_init_params_worker = {'model_dim': self.lower_ppo_args['model_dim'],
                                      'action_dim': self.lower_ppo_args['action_dim'],
@@ -278,7 +280,8 @@ class DesignEnv(gym.Env):
                     self.lower_ppo_args['device'],
                     self.current_network_iteration,
                     self.current_net_file_path,
-                    fixed_control)
+                    fixed_control,
+                    self.signal_slots)
                 )
             p.start()
             lower_processes.append(p)
@@ -298,7 +301,10 @@ class DesignEnv(gym.Env):
             current_action_timesteps = len(memory.states)
             print(f"Memory from worker {rank} received. Memory size: {current_action_timesteps}\n")
             self.lower_memories.states.extend(torch.from_numpy(np.asarray(memory.states)))
-            self.lower_memories.actions.extend(torch.from_numpy(np.asarray(memory.actions)))
+            actions = np.asarray(memory.actions)
+            self.lower_memories.actions.extend(torch.from_numpy(actions))
+            # Measured decisions containing each head, excluding fixed-control collection.
+            self.control_head_decisions += (actions[:, 1:] >= 0).sum(axis=0)
             self.lower_memories.num_proposals.extend(torch.from_numpy(np.asarray(memory.num_proposals)))
             self.lower_memories.values.extend(memory.values)
             self.lower_memories.logprobs.extend(memory.logprobs)
@@ -336,6 +342,8 @@ class DesignEnv(gym.Env):
                 current_lr_lower = self.lower_ppo.update_learning_rate(iteration, self.total_updates_lower)
 
             lower_loss = self.lower_ppo.update(self.lower_memories, num_proposals)
+            # Count update batches containing a head, not optimizer steps or nonzero gradients.
+            self.control_head_updates += (torch.stack(self.lower_memories.actions)[:, 1:] >= 0).any(dim=0).cpu().numpy()
 
             # Reset all memories
             del self.lower_memories
@@ -372,17 +380,36 @@ class DesignEnv(gym.Env):
                       
         return next_state, average_design_reward_norm, average_design_reward_unnorm, done, self.info
 
-    def _apply_action(self, proposals, iteration):
+    def _apply_action(self, proposals, iteration, crossing_ids=None, signal_slots=None):
         """
         Every iteration, new proposals are added to networkx graph. Then that is converted to torch geometric (for state) and XML (for SUMO)
         Updates all three graph representations (networkx, torch, XML) based on the action.
         The proposals are expected to be a list of tuples (location, thickness) for each proposed crosswalk.
+        Explicit logical IDs and slot assignments are retained across paired layouts.
+        Without metadata, this layout gets new local IDs and deterministic x-rank slots.
         
         Process:
         1. Denormalize proposed locations (thickness doesn't need denormalization)
         2. Add proposed crosswalks to networkx graph
         3. Update XML
         """
+        crossing_ids = [f"iter{iteration}_{i}" for i in range(len(proposals))] if crossing_ids is None else list(crossing_ids)
+        if len(crossing_ids) != len(proposals) or any(not isinstance(tid, str) or not tid for tid in crossing_ids) or len(set(crossing_ids)) != len(crossing_ids):
+            raise ValueError("Crossing IDs must contain one unique nonempty string per proposal.")
+        signal_ids = [f"{tid}_mid" for tid in crossing_ids]
+        if signal_slots is None:
+            order = sorted(range(len(proposals)), key=lambda i: (proposals[i][0], signal_ids[i]))
+            signal_slots = {signal_ids[i]: slot for slot, i in enumerate(order)}
+        if set(signal_slots) != set(signal_ids):
+            raise ValueError("Signal slots must cover exactly the generated crossing IDs.")
+        slots = list(signal_slots.values())
+        if any(not isinstance(slot, (int, np.integer)) or slot < 0 or slot >= self.max_proposals for slot in slots):
+            raise ValueError("Signal slots must be integer indices within max_proposals.")
+        if len(set(slots)) != len(slots):
+            raise ValueError("Signal slots must be unique.")
+        self.crossing_ids = crossing_ids
+        self.signal_slots = {tid: int(slot) for tid, slot in signal_slots.items()}
+
         # First make a copy
         self.iterative_networkx_graph = self.base_networkx_graph.copy()
         latest_horizontal_nodes_top_ped = self.horizontal_nodes_top_ped
@@ -417,7 +444,7 @@ class DesignEnv(gym.Env):
 
                 # Add the new edge  
                 end_node_pos = new_intersects[side]['intersection_pos']
-                end_node_id = f"iter{iteration}_{i}_{side}"
+                end_node_id = f"{self.crossing_ids[i]}_{side}"
                 self.iterative_networkx_graph.add_node(end_node_id, pos=end_node_pos, type='regular', width=-1) # type for this is regular (width specified for completeness as -1: Not used)
                 self.iterative_networkx_graph.add_edge(from_node, end_node_id, width=2.0) # The width of these edges is default (Not from the proposal)
                 self.iterative_networkx_graph.add_edge(end_node_id, to_node, width=2.0)
@@ -432,7 +459,7 @@ class DesignEnv(gym.Env):
                 mid_node_details[side]['node_id'] = end_node_id
 
             # Add the mid node and edges 
-            mid_node_id = f"iter{iteration}_{i}_mid"
+            mid_node_id = f"{self.crossing_ids[i]}_mid"
             
             # Obtain the y_coordinate of the middle node. Based on adjacent vehicle edges. Use interpolation to find the y coordinate.
             # To ensure that the y coordinates of the graph and the net file are the same. This has to be done here. 

@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from config import classify_and_return_args, get_config
+from ppo.models import MLP_ActorCritic
 from ppo.ppo import PPO
 from ppo.ppo_utils import Memory
 from simulation.design_env import DesignEnv
@@ -19,18 +20,22 @@ class FakeControlEnv:
         self.config = config
         self.step_count = 0
         self.decisions = 0
+        self.actions = []
         self.late_wait_queries = 0
         self.total_conflicts = self.total_switches = 0
         self.pedestrian_arrival_times = {"pedestrian": 2.0}
 
-    def reset(self, *args, **kwargs):
-        return np.zeros((1, 1)), {}
+    def reset(self, extreme_edges, num_proposals, signal_slots=None, **kwargs):
+        slots = range(num_proposals) if signal_slots is None else sorted(signal_slots.values())
+        self.active_slots = np.asarray(list(slots), dtype=np.int64)
+        return np.zeros((1, self.config.get("per_timestep_state_dim", 1))), {}
 
     def eval_step(self, *args, **kwargs):
+        self.actions.append(np.asarray(args[0]).copy())
         self.decisions += 1
         self.step_count += int(self.config["lower_action_duration"] / self.config["step_length"])
         done = self.step_count >= self.config["max_timesteps"]
-        return np.zeros((1, 1)), 0, done, False, {"vehicle_wait": 2.0, "pedestrian_wait": 3.0}
+        return np.zeros((1, self.config.get("per_timestep_state_dim", 1))), 0, done, False, {"vehicle_wait": 2.0, "pedestrian_wait": 3.0}
 
     def get_vehicle_waiting_time(self):
         self.late_wait_queries += 1
@@ -47,25 +52,78 @@ class FakeControlEnv:
         pass
 
 
+class SparseControlPolicyTests(unittest.TestCase):
+    def test_mixed_masks_preserve_likelihood_and_exclude_inactive_head_derivatives(self):
+        masks = [[], [7], [7, 0, 3], list(range(10))]
+        states, actions, sampled_logprobs, counts = [], [], [], []
+        with torch.random.fork_rng():
+            torch.manual_seed(123)
+            policy = MLP_ActorCritic(1, 14, action_duration=1, per_timestep_state_dim=123,
+                                    activation="tanh", model_size="small")
+            for training in [True, False]:
+                for slots in masks:
+                    state = torch.linspace(-1, 1, 123).reshape(1, 123) + len(states) / 10
+                    with torch.no_grad():
+                        compact, logprob = policy.act(state, len(slots), training=training, active_slots=slots)
+                    self.assertEqual(compact.shape, (1 + len(slots),))
+                    padded = torch.full((11,), -1, dtype=torch.long)
+                    padded[0] = compact[0]
+                    padded[1 + torch.tensor(slots, dtype=torch.long)] = compact[1:].long()
+                    states.append(state)
+                    actions.append(padded)
+                    counts.append(len(slots))
+                    sampled_logprobs.append(logprob.squeeze())
+        states = torch.stack(states).unsqueeze(1)
+        actions = torch.stack(actions)
+        logprobs, _, _ = policy.evaluate(states, actions, torch.tensor(counts))
+        torch.testing.assert_close(logprobs, torch.stack(sampled_logprobs), rtol=1e-5, atol=1e-6)
+        logits = policy.actor(states)
+        for row in range(len(counts)):
+            active = actions[row, 1:] >= 0
+            derivative = torch.autograd.grad(logprobs[row], policy.actor_logits.bias, retain_graph=True)[0][4:]
+            torch.testing.assert_close(derivative[~active], torch.zeros_like(derivative[~active]), rtol=0, atol=0)
+            expected = actions[row, 1:][active].float() - torch.sigmoid(logits[row, 4:][active])
+            torch.testing.assert_close(derivative[active], expected)
+
+
 class EvaluationWorkerTests(unittest.TestCase):
-    def test_main_evaluation_passes_network_directly_to_worker(self):
+    def test_main_preserves_historical_baselines_but_rejects_legacy_control(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
         import main
 
-        evaluation = {
-            "eval_lower_workers": 1, "eval_n_iterations": 1, "eval_worker_device": "cpu",
-            "in_range_demand_scales": [1.0], "out_of_range_demand_scales": [],
-            "lower_state_dim": (10, 123), "eval_save_dir": "/tmp", "eval_lower_timesteps": 450,
+        def agent(**kwargs):
+            policy = torch.nn.Linear(1, 1)
+            policy.observation_version = MLP_ActorCritic.observation_version
+            return SimpleNamespace(policy=policy)
+
+        checkpoint = {
+            "higher": {"state_dict": agent().policy.state_dict(), "norm_x": None, "norm_y": None},
+            "lower": {"observation_version": 1},
         }
-        env = Mock(network_dir="/tmp/direct-network", extreme_edge_dict={})
-        with patch.object(main, "PPO"), patch.object(main, "DesignEnv", return_value=env), \
-             patch.object(main.mp, "Queue"), \
-             patch.object(main.mp, "Process", side_effect=RuntimeError("stop before worker")) as process:
-            with self.assertRaisesRegex(RuntimeError, "stop before worker"):
-                main.eval({}, {"lower_action_duration": 10}, {"model_kwargs": {"run_dir": "/tmp"}},
-                          {}, evaluation, tl=True, real_world=True)
-            arguments = process.call_args.kwargs["args"]
-            self.assertEqual(arguments[1]["total_action_timesteps_per_episode"], 45)
-            self.assertEqual(arguments[3], "/tmp/direct-network/network_iteration_0.net.xml")
+        with TemporaryDirectory() as temporary:
+            network = Path(temporary) / "network_iteration_0.net.xml"
+            network.write_text('<net><junction id="west_mid" x="10" y="0"/>'
+                               '<tlLogic id="west_mid"/></net>')
+            evaluation = {
+                "eval_lower_workers": 1, "eval_n_iterations": 1, "eval_worker_device": "cpu",
+                "in_range_demand_scales": [1.0], "out_of_range_demand_scales": [],
+                "lower_state_dim": (10, 123), "eval_save_dir": temporary, "eval_lower_timesteps": 450,
+            }
+            env = Mock(network_dir=temporary, extreme_edge_dict={})
+            for tl, unsignalized in [(True, False), (True, True), (False, True), (False, False)]:
+                with self.subTest(tl=tl, unsignalized=unsignalized), \
+                     patch.object(main, "PPO", side_effect=agent), \
+                     patch.object(main, "DesignEnv", return_value=env), \
+                     patch.object(main.torch, "load", return_value=checkpoint), \
+                     patch.object(main.mp, "Queue"), \
+                     patch.object(main.mp, "Process", side_effect=RuntimeError("stop before worker")):
+                    error, message = (RuntimeError, "stop before worker") if tl or unsignalized else (ValueError, "incompatible")
+                    with self.assertRaisesRegex(error, message):
+                        main.eval({}, {"lower_action_duration": 10},
+                                  {"model_kwargs": {"run_dir": temporary}}, {}, evaluation,
+                                  policy_path=str(Path(temporary) / "historical.pth"),
+                                  tl=tl, unsignalized=unsignalized, real_world=True)
 
     def setUp(self):
         self.control_args = {
@@ -74,13 +132,13 @@ class EvaluationWorkerTests(unittest.TestCase):
         }
         self.config = {
             "control_args": self.control_args, "worker_demand_scale": 1.5,
-            "lower_policy": SimpleNamespace(act=lambda *args, **kwargs: (torch.zeros(1), None)),
+            "lower_policy": SimpleNamespace(act=lambda *args, **kwargs: (torch.zeros(5), None)),
             "lower_state_normalizer": SimpleNamespace(normalize=lambda state: state),
             "worker_device": "cpu", "run_dir": "/tmp", "network_iteration": 0,
             "num_proposals": 4, "n_iterations": 1, "total_action_timesteps_per_episode": 45,
         }
 
-    def run_worker(self):
+    def run_worker(self, tl=False, unsignalized=False):
         instances = []
 
         def make_env(*args, **kwargs):
@@ -90,7 +148,7 @@ class EvaluationWorkerTests(unittest.TestCase):
 
         results = queue.SimpleQueue()
         with patch("simulation.worker.ControlEnv", side_effect=make_env):
-            parallel_eval_worker(0, self.config, results, None, {})
+            parallel_eval_worker(0, self.config, results, None, {}, tl=tl, unsignalized=unsignalized)
         scale, episodes = results.get_nowait()
         self.assertEqual(scale, 1.5)
         return instances[0], episodes[0]
@@ -123,14 +181,66 @@ class EvaluationWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integer multiple"):
             self.run_worker()
 
+    def test_fixed_and_unsignalized_evaluation_need_no_learned_policy_or_normalizer(self):
+        del self.config["lower_policy"], self.config["lower_state_normalizer"], self.config["worker_device"]
+        for tl, unsignalized in [(True, False), (False, True)]:
+            with self.subTest(tl=tl, unsignalized=unsignalized):
+                env, result = self.run_worker(tl=tl, unsignalized=unsignalized)
+                self.assertEqual(env.decisions, 45)
+                self.assertEqual(result["total_veh_waiting_time"], 90)
+                self.assertEqual(result["total_ped_waiting_time"], 135)
+
+    def test_unsignalized_flag_commands_green_crossings_in_real_step(self):
+        from simulation.control_env import ControlEnv
+
+        def make_env(config, *args, **kwargs):
+            env = FakeControlEnv(config)
+            env.sumo_running, env.previous_action = True, None
+            env.steps_per_action = int(config["lower_action_duration"] / config["step_length"])
+            env.tl_ids = ["intersection", "west_mid", "east_mid"]
+            env.corrected_occupancy_map = {}
+            env._detect_switch = lambda *args: ([0, 0, 0], [])
+            env._update_pedestrian_existence_times = lambda: None
+            env._get_observation = lambda phase: np.zeros(1)
+            env._count_near_conflicts = lambda occupancy: 0
+            env._get_pedestrian_arrival_times = lambda: None
+            env._get_control_reward = lambda *args, **kwargs: 0
+            env._check_done = lambda: env.step_count >= config["max_timesteps"]
+            env._apply_action = Mock(side_effect=AssertionError("Learned commands applied to unsignalized baseline"))
+            env.eval_step = ControlEnv.eval_step.__get__(env)
+            return env
+
+        self.config.update(num_proposals=2, total_action_timesteps_per_episode=1)
+        del self.config["lower_policy"], self.config["lower_state_normalizer"], self.config["worker_device"]
+        with patch("simulation.worker.ControlEnv", side_effect=make_env), \
+             patch("simulation.control_env.traci") as traci:
+            parallel_eval_worker(0, self.config, queue.SimpleQueue(), None, {}, unsignalized=True)
+            commanded = {call.args for call in traci.trafficlight.setRedYellowGreenState.call_args_list}
+            self.assertEqual(commanded, {("west_mid", "GGG"), ("east_mid", "GGG")})
+
+    def test_sparse_evaluation_commands_use_the_declared_heads(self):
+        with torch.random.fork_rng():
+            torch.manual_seed(123)
+            policy = MLP_ActorCritic(1, 14, action_duration=1, per_timestep_state_dim=123,
+                                    activation="tanh", model_size="small")
+        with torch.no_grad():
+            policy.actor_logits.weight.zero_()
+            policy.actor_logits.bias.copy_(torch.tensor([-1, 2, -1, -1, 2, -2, 2, 2, 2, 2, 2, 2, 2, 2]))
+        self.control_args["per_timestep_state_dim"] = 123
+        self.config.update(lower_policy=policy, num_proposals=2, total_action_timesteps_per_episode=1,
+                           signal_slots={"west_mid": 7, "east_mid": 1})
+        env, _ = self.run_worker()
+        np.testing.assert_array_equal(env.actions, [[1, 0, 1]])
+
     def test_training_accepts_intersection_plus_ten_crossing_actions(self):
+        expected_action = torch.tensor([3, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
         policy = SimpleNamespace(
-            act=lambda *args: (torch.zeros(11), torch.tensor(0.0)),
+            act=lambda *args, **kwargs: (expected_action, torch.tensor(0.0)),
             critic=lambda *args: torch.tensor(0.0),
         )
-        config = dict(self.control_args, total_action_timesteps_per_episode=1)
+        config = dict(self.control_args, total_action_timesteps_per_episode=1, max_timesteps=10)
         env = FakeControlEnv(config)
-        env.train_step = lambda action: (np.zeros((1, 1)), 0, True, False, {})
+        env.train_step = env.eval_step
         env._get_design_reward = lambda count: 0
         results = queue.SimpleQueue()
         with patch("simulation.worker.ControlEnv", return_value=env):
@@ -139,7 +249,8 @@ class EvaluationWorkerTests(unittest.TestCase):
                                   {}, "cpu", 0, None)
         rank, memory, reward, executed_decisions = results.get_nowait()
         self.assertEqual(executed_decisions, 1)
-        self.assertEqual(memory.actions[0].shape, (11,))
+        np.testing.assert_array_equal(memory.actions[0], expected_action.numpy())
+        np.testing.assert_array_equal(env.actions[0], expected_action.numpy())
 
 
 class TrainingCollectionTests(unittest.TestCase):
@@ -155,7 +266,7 @@ class TrainingCollectionTests(unittest.TestCase):
         env.train_step = train_step
         env._get_design_reward = lambda count: float(rank)
         policy = SimpleNamespace(
-            act=lambda *args: (torch.zeros(5), torch.tensor(0.0)),
+            act=lambda *args, **kwargs: (torch.zeros(5), torch.tensor(0.0)),
             critic=lambda *args: torch.tensor(0.0),
         )
         results = queue.SimpleQueue()
@@ -199,7 +310,6 @@ class TrainingCollectionTests(unittest.TestCase):
                                           fixed_control=True)
                 self.assertEqual(results.get_nowait(), (0, None, -73.0, horizon))
                 self.assertTrue(results.empty())
-                env.reset.assert_called_once_with({}, 4, tl=True, eval_mode=False)
                 self.assertEqual(env.eval_step.call_count, horizon)
                 for call in env.eval_step.call_args_list:
                     self.assertEqual(call.kwargs, {"tl": True})
@@ -218,6 +328,10 @@ class TrainingCollectionTests(unittest.TestCase):
         env.current_network_iteration = 3
         env.current_net_file_path = "/tmp/network_iterations/network_iteration_3.net.xml"
         env.extreme_edge_dict = {}
+        env.crossing_ids = ["west", "new", "east", "far"]
+        env.signal_slots = dict(zip([f"{tid}_mid" for tid in env.crossing_ids], [1, 4, 7, 9]))
+        env.control_head_decisions = np.arange(10, dtype=np.int64)
+        env.control_head_updates = np.arange(10, dtype=np.int64) + 10
         env.lower_ppo = Mock()
         env.lower_state_normalizer = Mock()
         env.lower_reward_normalizer = Mock()
@@ -248,6 +362,8 @@ class TrainingCollectionTests(unittest.TestCase):
                 self.assertIs(info, env.info)
         self.assertEqual(env.global_step, 100 + 2 * (23 + 17) * 10)
         self.assertEqual((env.action_timesteps, env.lower_update_count), (7, 2))
+        np.testing.assert_array_equal(env.control_head_decisions, np.arange(10))
+        np.testing.assert_array_equal(env.control_head_updates, np.arange(10) + 10)
         self.assertEqual(vars(env.lower_memories), original_memory)
         self.assertEqual(env.lower_ppo.mock_calls, [])
         self.assertEqual(env.lower_state_normalizer.mock_calls, [])
@@ -267,28 +383,47 @@ class TrainingCollectionTests(unittest.TestCase):
     def test_update_waits_for_every_worker_and_preserves_episode_advantages(self):
         for decisions in [23, 36]:
             with self.subTest(decisions=decisions):
-                packets = [self.worker_packets(decisions, rank) for rank in range(2)]
+                maps = [{"west_mid": 1, "new_mid": 3, "east_mid": 7, "far_mid": 9},
+                        {"left_mid": 0, "middle_mid": 4, "east_mid": 7, "right_mid": 8}]
                 results = queue.SimpleQueue()
-                # A legal arrival order also interleaves the old partial transfers.
-                for index in range(max(map(len, packets))):
-                    for worker_packets in packets:
-                        if index < len(worker_packets):
-                            results.put(worker_packets[index])
-                processes = [Mock(), Mock()]
+                processes = []
+
+                def make_process(target, args):
+                    process = Mock()
+                    process.start.side_effect = lambda: target(*args)
+                    processes.append(process)
+                    return process
+
+                def make_worker_env(config, *args, worker_id, **kwargs):
+                    worker_env = FakeControlEnv(config)
+                    def train_step(action):
+                        state, _, done, truncated, info = worker_env.eval_step(action)
+                        return state, float(worker_id * 100), done, truncated, info
+                    worker_env.train_step = train_step
+                    worker_env._get_design_reward = lambda count: float(worker_id)
+                    return worker_env
+
                 policy = Mock()
                 policy.to.return_value = policy
+                policy.act.return_value = (torch.zeros(5), torch.tensor(0.0))
+                policy.critic.return_value = torch.tensor(0.0)
                 env = DesignEnv.__new__(DesignEnv)
                 env.control_args = {
-                    "lower_num_processes": 2, "global_seed": 123, "lower_update_freq": 1,
+                    "lower_num_processes": 2, "global_seed": 123, "lower_update_freq": 4 * decisions,
                     "lower_anneal_lr": False, "lower_action_duration": 10,
+                    "max_timesteps": decisions * 10, "total_action_timesteps_per_episode": decisions,
+                    "step_length": 1.0,
                 }
                 env.lower_ppo_args = {"device": "cpu", "lr": 0.001}
                 env.run_dir, env.max_proposals = "/tmp", 10
-                env.lower_state_normalizer = None
+                env.lower_state_normalizer = SimpleNamespace(normalize=lambda state: state)
                 env.extreme_edge_dict, env.current_net_file_path = {}, None
                 env.current_network_iteration = 0
                 env.lower_memories = Memory()
                 env.global_step = env.action_timesteps = env.lower_update_count = 0
+                env.control_head_decisions = np.zeros(10, dtype=np.int64)
+                env.control_head_updates = np.zeros(10, dtype=np.int64)
+                env.info = {}
                 # Identity reward normalization isolates trajectory collection and GAE.
                 env.lower_reward_normalizer = env.higher_reward_normalizer = SimpleNamespace(
                     normalize=torch.as_tensor)
@@ -301,7 +436,7 @@ class TrainingCollectionTests(unittest.TestCase):
                 def update(memory, num_proposals):
                     self.assertTrue(all(process.join.called for process in processes),
                                     "PPO updated before every worker finished")
-                    self.assertEqual(len(memory.rewards), 2 * decisions)
+                    self.assertEqual(len(memory.rewards), 4 * decisions)
                     rewards = torch.tensor(memory.rewards)
                     values = torch.tensor(memory.values)
                     terminals = torch.tensor(memory.is_terminals)
@@ -310,7 +445,7 @@ class TrainingCollectionTests(unittest.TestCase):
                         PPO.compute_gae(None, rewards[start:start + decisions],
                                         values[start:start + decisions],
                                         terminals[start:start + decisions], 0.99, 0.95)
-                        for start in [0, decisions]])
+                        for start in range(0, 4 * decisions, decisions)])
                     torch.testing.assert_close(actual, expected)
                     torch.testing.assert_close(actual[:decisions], torch.zeros(decisions))
                     return dict.fromkeys(["policy_loss", "value_loss", "entropy_loss",
@@ -318,11 +453,25 @@ class TrainingCollectionTests(unittest.TestCase):
 
                 env.lower_ppo = SimpleNamespace(policy_old=policy, update=Mock(side_effect=update))
                 with patch("simulation.design_env.mp.Queue", return_value=results), \
-                     patch("simulation.design_env.mp.Process", side_effect=processes):
-                    env.step(torch.zeros((1, 10, 2)), torch.tensor(4), 0)
+                     patch("simulation.design_env.mp.Process", side_effect=make_process), \
+                     patch("simulation.worker.ControlEnv", side_effect=make_worker_env):
+                    for iteration, slots in enumerate(maps):
+                        env.signal_slots = slots
+                        env.step(torch.zeros((1, 10, 2)), torch.tensor(4), iteration, update_layout=False)
+                        if iteration == 0:
+                            env.lower_ppo.update.assert_not_called()
+                            expected_first = np.zeros(10, dtype=np.int64)
+                            expected_first[[1, 3, 7, 9]] = 2 * decisions
+                            np.testing.assert_array_equal(env.control_head_decisions, expected_first)
+                            np.testing.assert_array_equal(env.control_head_updates, np.zeros(10))
                 env.lower_ppo.update.assert_called_once()
-                self.assertEqual(env.global_step, 2 * decisions * 10)
+                self.assertEqual(env.global_step, 4 * decisions * 10)
                 self.assertEqual(env.action_timesteps, 0)
+                expected_decisions = np.zeros(10, dtype=np.int64)
+                expected_decisions[[0, 1, 3, 4, 8, 9]] = 2 * decisions
+                expected_decisions[7] = 4 * decisions
+                np.testing.assert_array_equal(env.control_head_decisions, expected_decisions)
+                np.testing.assert_array_equal(env.control_head_updates, expected_decisions > 0)
 
 
 if __name__ == "__main__":

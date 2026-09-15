@@ -125,7 +125,7 @@ def extract_designs(force=False):
     state_norm = WelfordNormalizer(obs_shape)
 
     env = DesignEnv(design_args, control_args, lower_ppo_args, RUN_DIR)
-    norm_x, norm_y = load_policy(
+    norm_x, norm_y, _ = load_policy(
         higher_ppo.policy, lower_ppo.policy, state_norm, POLICY_PATH)
     env.normalizer_x = norm_x
     env.normalizer_y = norm_y

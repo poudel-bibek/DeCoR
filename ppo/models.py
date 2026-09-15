@@ -22,7 +22,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class MLP_ActorCritic(nn.Module):
-    observation_version = 2  # Fixed phase slots, then west-to-east crossing features.
+    observation_version = 3  # Explicit sparse signal slots for phases, features and actions.
 
     def __init__(self, in_channels, action_dim, **kwargs):
         """
@@ -96,18 +96,11 @@ class MLP_ActorCritic(nn.Module):
         flat = state.view(bsz, -1)  # shape: (B, in_channels*action_duration*per_timestep_state_dim)
         return self.critic_value(self.critic_layers(flat))
 
-    def act(self, state, num_proposals, training=True):
+    def act(self, state, num_proposals, training=True, active_slots=None):
         """
-        Sample an action exactly like in the CNN version:
-          - intersection action from first 4 logits (Categorical)
-          - midblock from next num_proposals logits (Bernoulli)
-          - Ignore the rest of the logits.
-
-        If training=False, selects the most likely action deterministically.
-        Otherwise, samples stochastically.
-
-        TODO: Is there a bias in log_prob because of the number of proposals?
-        How to propoerly handle the rest (is ignoring them good?)
+        Return compact actions: intersection, then crossings in active_slots order.
+        Omitted slots select the first num_proposals heads.
+        If training=False, select the most likely action deterministically.
         """
         # print(f"Sampling actions for intersection and {num_proposals} midblock proposals...")
         state = state.reshape(1, 1, state.shape[0], state.shape[1])
@@ -122,9 +115,13 @@ class MLP_ActorCritic(nn.Module):
         else:
             intersection_action = torch.argmax(intersection_logits, dim=1) # [1]
 
-        # The next num_proposals logits => midblock (Bernoulli)
-        midblock_logits = action_logits[:, 4: 4 + num_proposals]
-        # midblock_probs = torch.sigmoid(midblock_logits)
+        slots = torch.arange(num_proposals, device=action_logits.device) if active_slots is None else \
+            torch.as_tensor(active_slots, dtype=torch.long, device=action_logits.device)
+        if slots.ndim != 1 or slots.numel() != num_proposals or slots.unique().numel() != num_proposals:
+            raise ValueError("Active slots must contain one unique slot per crossing.")
+        if torch.any((slots < 0) | (slots >= action_logits.shape[1] - 4)):
+            raise ValueError("Active slots must index the available crossing heads.")
+        midblock_logits = action_logits[:, 4 + slots]
         midblock_dist = Bernoulli(logits=midblock_logits)
         if training:
             midblock_actions = midblock_dist.sample()  # shape [1,num_proposals]
@@ -149,15 +146,13 @@ class MLP_ActorCritic(nn.Module):
 
     def evaluate(self, states, actions, num_proposals_batch, device=None):
         """
-        Evaluate a batch of states and pre-sampled actions. 
-        number of proposals remains same for all parallel actors that collect experiences. 
-        
-        TODO: Remove the bias due to number of proposals.
+        Evaluate length-(1 + max_proposals) actions with inactive slots marked -1.
+        Each transition carries its own active crossing count and sparse mask.
         """
         # print(f"Evaluating... with num_proposals: {num_proposals_batch}, shape: {num_proposals_batch.shape}")
         action_logits = self.actor(states) # [B, 4 + max_proposals]
         intersection_logits = action_logits[:, :4] # [B, 4]
-        midblock_logits_all = action_logits[:, 4:] # [B, max_proposals - 4]
+        midblock_logits_all = action_logits[:, 4:] # [B, max_proposals]
 
         # Intersection
         intersection_dist = Categorical(logits=intersection_logits)
@@ -171,8 +166,11 @@ class MLP_ActorCritic(nn.Module):
 
         # Midblock, per sample
         for i, num_proposals in enumerate(num_proposals_batch.tolist()):
-            sample_logits = midblock_logits_all[i, :num_proposals]
-            sample_actions = actions[i, 1:1+num_proposals].float() # First action was taken by intersection
+            active = actions[i, 1:] >= 0
+            if int(active.sum()) != num_proposals:
+                raise ValueError("Action mask does not match the transition's crossing count.")
+            sample_logits = midblock_logits_all[i, active]
+            sample_actions = actions[i, 1:][active].float()
             sample_dist = Bernoulli(logits=sample_logits)
             # print(f"Sample log probs: {sample_dist.log_prob(sample_actions)}, shape: {sample_dist.log_prob(sample_actions).shape}")
             midblock_log_probs[i] = sample_dist.log_prob(sample_actions).sum() # sum over all num_proposals actions
@@ -963,7 +961,9 @@ class GAT_v2_ActorCritic(nn.Module):
             markers (tuple of ndarrays): Markers to plot, shape (N, 2).
         """
         fs = 16
-        base_save_path = f"{run_dir}/gmm_iterations/gmm_i_{iteration}_b{batch_index}"
+        file_stem = f"gmm_i_{iteration}_b{batch_index}"
+        plot_dir = f"{run_dir}/generated/gmm_iterations"
+        os.makedirs(plot_dir, exist_ok=True)
         
         # Sample from the GMM
         samples = gmm_single.sample((num_samples,))  # Shape: (num_samples, 2)
@@ -1001,7 +1001,7 @@ class GAT_v2_ActorCritic(nn.Module):
         
         plt.tight_layout()
         # plt.show()
-        plt.savefig(f"{base_save_path}.png")
+        plt.savefig(f"{plot_dir}/{file_stem}.png")
         plt.close()
 
         # Create second plot with markers if provided
@@ -1030,10 +1030,10 @@ class GAT_v2_ActorCritic(nn.Module):
             ax.set_title('GMM with Samples', fontweight='bold', fontsize=fs)
             ax.tick_params(axis='both', which='major', labelsize=fs-2)
             plt.tight_layout()
-            plt.savefig(f"{base_save_path}_markers.png")
+            plt.savefig(f"{plot_dir}/{file_stem}_markers.png")
 
             # save data as a file
             data = gmm_single, markers
-            with open(f"{base_save_path}_data.pkl", "wb") as f:
+            with open(f"{run_dir}/gmm_iterations/{file_stem}_data.pkl", "wb") as f:
                 pickle.dump(data, f)
             plt.close()

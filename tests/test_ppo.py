@@ -69,6 +69,7 @@ class PPOValueLossTests(unittest.TestCase):
                             state = torch.randn(10, 123)
                             with torch.no_grad():
                                 action, logprob = agent.policy_old.act(state, 4)
+                                action = torch.nn.functional.pad(action, (0, 11 - action.numel()), value=-1)
                                 value = agent.policy_old.critic(state.unsqueeze(0)).item()
                         else:
                             state = Data(x=torch.randn(3, 2),

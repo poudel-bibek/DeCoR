@@ -56,7 +56,9 @@ def save_graph_visualization(graph, iteration, run_dir):
     plt.title(f"Pedestrian Graph - Iteration {iteration}", fontsize=12)
     plt.axis('off')
     plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, f'graph_iterations/graph_i{iteration}.png'), dpi=300, bbox_inches='tight')
+    plot_dir = os.path.join(run_dir, 'generated', 'graph_iterations')
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(os.path.join(plot_dir, f'graph_i{iteration}.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
 def save_better_graph_visualization(graph, 
@@ -249,7 +251,9 @@ def save_better_graph_visualization(graph,
     ax.spines['left'].set_visible(False)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(f'{run_dir}', f'graph_iterations/egraph_i_{iteration}.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
+    plot_dir = os.path.join(run_dir, 'generated', 'graph_iterations')
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(os.path.join(plot_dir, f'egraph_i_{iteration}.png'), dpi=dpi, bbox_inches='tight', facecolor='white')
     # save data as a file
     data = graph, special_nodes, regular_nodes
     with open(f"{run_dir}/graph_iterations/graph_i_{iteration}_data.pkl", "wb") as f:

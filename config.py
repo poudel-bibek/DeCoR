@@ -32,7 +32,7 @@ def get_config():
         "higher_vf_clip_param": 0.5,  # Value function clipping parameter
         "higher_update_freq": 16,  # Number of action timesteps between each policy update. A low value incurs high variance for design agent.
         "higher_lr": 0.0001,  # Learning rate for higher-level agent
-        "higher_gamma": 0.99,  # Discount factor for higher-level agent
+        "higher_gamma": 0.0,  # One-shot design: each round is rewarded immediately, no discounted future or next-state bootstrap
         "higher_K_epochs": 4,  # Number of epochs to update policy for higher-level agent
         "higher_eps_clip": 0.2,  # Clip parameter for PPO for higher-level agent
         "higher_batch_size": 2,  # Batch size for higher-level agent
@@ -113,6 +113,9 @@ def classify_and_return_args(train_config, device):
         'clamp_max': train_config['clamp_max'],
         'higher_anneal_lr': train_config['higher_anneal_lr'],
         'higher_update_freq': train_config['higher_update_freq'],
+        'design_objective': 'one-shot: every round proposes from the canonical original-crossing context returned by '
+                            'DesignEnv.reset(); the higher policy is trained on the immediate design reward and the final '
+                            'layout is extracted from that same context. Historical runs fed each layout back as the next context.',
     }
 
     control_args = {

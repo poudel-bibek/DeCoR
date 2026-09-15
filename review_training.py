@@ -27,7 +27,7 @@ from ppo.ppo_utils import Memory, WelfordNormalizer
 from torch_geometric.data import Batch
 from review_validation import ROOT, JOURNEY_PROTOCOL, digest, run_jobs, save
 from simulation.design_env import DesignEnv
-from utils import save_policy
+from utils import SLOT_PROTOCOL, save_policy
 
 
 ARMS = ("joint", "sequential", "fixed_layout", "random_layout")
@@ -86,15 +86,18 @@ def layout_record(env, proposals, count):
             "iteration": env.current_network_iteration,
             "num_proposals": int(count), "real_world": False,
             "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
-            "proposals": proposals[0, :int(count)].tolist()}
+            "proposals": proposals[0, :int(count)].tolist(),
+            "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots)}
 
 
 def use_layout(env, layout):
     proposals = torch.full((1, 10, 2), -1.0)
     count = torch.tensor(layout["num_proposals"])
     proposals[0, :count] = torch.tensor(layout["proposals"])
-    env._apply_action(proposals[0, :count].numpy(), layout["iteration"])
-    # Reuse identical signal identities and network bytes in the fixed-layout arm.
+    # Reuse identical signal identities, slots and network bytes in the fixed-layout arm.
+    env._apply_action(proposals[0, :count].numpy(), layout["iteration"],
+                      crossing_ids=layout["crossing_ids"], signal_slots=layout["signal_slots"])
+    assert env.crossing_ids == layout["crossing_ids"] and env.signal_slots == layout["signal_slots"]
     if Path(layout["network"]).resolve() != Path(env.current_net_file_path).resolve():
         shutil.copyfile(layout["network"], env.current_net_file_path)
     assert digest(env.current_net_file_path) == layout["sha256"]
@@ -130,12 +133,15 @@ def run_arm(directory, arm, seed, settings, sources):
     higher = PPO(**higher_args)
     initial_controller = policy_digest(env.lower_ppo.policy)
     initial_design = policy_digest(higher.policy)
-    original_state = state = env.reset()
+    # One-shot design: every proposal, value and final extraction uses the original-crossing context.
+    context = env.reset()
     memory = Memory()
     design_updates = 0
     configuration = dict(design_args=d, control_args=ctrl,
                          higher_ppo_args=higher_args, lower_ppo_args=lower_args)
     record = {"arm": arm, "seed": seed, "configuration": configuration,
+              "controller_interface": {"observation_version": env.lower_ppo.policy.observation_version,
+                                       "slot_protocol": SLOT_PROTOCOL, "permutation_augmentation": False},
               "initial_controller_sha256": initial_controller,
               "initial_design_sha256": initial_design, "source_hashes": sources,
               "rounds": [], "complete": False}
@@ -150,7 +156,7 @@ def run_arm(directory, arm, seed, settings, sources):
         higher.policy_old.eval()
         with torch.no_grad():
             _, chosen, n, _ = higher.policy_old.act(
-                original_state, iteration, d["clamp_min"], d["clamp_max"], "cpu",
+                context, iteration, d["clamp_min"], d["clamp_max"], "cpu",
                 training=False, visualize=False)
         env._apply_action(chosen[0, :int(n)].numpy(), iteration)
         return chosen, n
@@ -171,40 +177,40 @@ def run_arm(directory, arm, seed, settings, sources):
             with torch.random.fork_rng(), torch.no_grad():
                 torch.manual_seed(seed + iteration * 7919)
                 raw, proposals, count, logprob = higher.policy_old.act(
-                    state, iteration, d["clamp_min"], d["clamp_max"], "cpu",
+                    context, iteration, d["clamp_min"], d["clamp_max"], "cpu",
                     training=True, visualize=False)
-                value = higher.policy_old.critic(state, device="cpu").item()
+                value = higher.policy_old.critic(context, device="cpu").item()
         elif arm == "random_layout":
             proposals, count = random_proposals(joint["rounds"][iteration - 1]["crossings"], rng)
         old_updates = env.lower_update_count
         old_steps = env.global_step
         # Match controller-training episode seeds by experience, including sequential stage two.
         rollout_round = iteration - design_rounds if arm == "sequential" and not fixed_control else iteration
-        next_state, reward, raw_reward, done, info = env.step(
+        _, reward, raw_reward, done, info = env.step(
             proposals, count, rollout_round, fixed_control=fixed_control,
             update_layout=optimize_design or arm == "random_layout")
         assert env.global_step - old_steps == settings["workers"] * 360
         losses = None
         if optimize_design:
-            memory.append(state, raw, count, value, logprob, reward, done)
+            memory.append(context, raw, count, value, logprob, reward, done)
             if iteration % d["higher_update_freq"] == 0:
                 design_updates += 1
                 if d["higher_anneal_lr"]:
                     higher.update_learning_rate(design_updates, settings["design_horizon_rounds"] // d["higher_update_freq"])
                 before = design_diagnostics(higher, memory)
-                with torch.no_grad():
-                    bootstrap = higher.policy_old.critic(next_state, device="cpu").item()
-                losses = {key: float(value) for key, value in higher.update(memory, bootstrap_value=bootstrap).items()}
+                losses = {key: float(value) for key, value in higher.update(memory).items()}
                 losses["rollout_before_update"] = before
                 losses["rollout_after_update"] = design_diagnostics(higher, memory)
                 memory = Memory()
-        state = next_state
         record["rounds"].append({"iteration": iteration, "rollout_round": rollout_round, "fixed_control": fixed_control,
                                 "crossings": int(count), "proposals": proposals[0, :int(count)].tolist(),
+                                "signal_slots": dict(env.signal_slots),
                                 "simulation_steps": env.global_step, "design_reward": float(raw_reward),
                                 "design_updates": design_updates, "design_loss": losses,
                                 "control_updates": env.lower_update_count,
                                 "control_loss": {key: float(value) for key, value in info.items()} if env.lower_update_count > old_updates else None,
+                                "control_head_decisions": env.control_head_decisions.tolist(),
+                                "control_head_updates": env.control_head_updates.tolist(),
                                 "elapsed_s": time.monotonic() - started})
         save(folder / "training.json", record)
         print(f"{seed} {arm} round {iteration}/{rounds}: {env.global_step} simulation steps", flush=True)
@@ -216,7 +222,8 @@ def run_arm(directory, arm, seed, settings, sources):
     assert env.global_step == settings["workers"] * rounds * 360
     checkpoint = folder / "final.pth"
     save_policy(higher.policy, env.lower_ppo.policy, env.lower_state_normalizer,
-                env.normalizer_x, env.normalizer_y, str(checkpoint))
+                env.normalizer_x, env.normalizer_y, str(checkpoint),
+                env.control_head_decisions, env.control_head_updates)
     control_rounds = sum(not row["fixed_control"] for row in record["rounds"])
     assert control_rounds == settings["rounds"]
     assert env.lower_state_normalizer.count.value == control_rounds * settings["workers"] * 36
@@ -225,6 +232,8 @@ def run_arm(directory, arm, seed, settings, sources):
                           "simulation_steps": env.global_step,
                           "control_decisions": control_rounds * settings["workers"] * 36},
                   layout=layout_record(env, proposals, count),
+                  control_head_decisions=env.control_head_decisions.tolist(),
+                  control_head_updates=env.control_head_updates.tolist(),
                   controller_sha256=policy_digest(env.lower_ppo.policy),
                   design_sha256=policy_digest(higher.policy),
                   state_normalizer_count=env.lower_state_normalizer.count.value,
@@ -251,6 +260,7 @@ def run_seed(job):
     schedules = [[row["rollout_round"] for row in r["rounds"] if not row["fixed_control"]] for r in records]
     assert all(schedule == schedules[0] for schedule in schedules)
     assert records[2]["layout"]["sha256"] == records[3]["layout"]["sha256"] == records[0]["layout"]["sha256"]
+    assert records[2]["layout"]["signal_slots"] == records[3]["layout"]["signal_slots"] == records[0]["layout"]["signal_slots"]
     return seed
 
 
@@ -269,7 +279,8 @@ def evaluate(directory):
             assert digest(layout["network"]) == layout["sha256"]
             manifest = {"checkpoint": training["checkpoint"],
                         "checkpoint_sha256": training["checkpoint_sha256"],
-                        "observation_version": 2, "active_arms": ["learned"],
+                        "observation_version": training["controller_interface"]["observation_version"],
+                        "active_arms": ["learned"],
                         "learned_control_skip_reason": None, "source_hashes": study["source_hashes"],
                         "configuration": training["configuration"], "warmup_control": "random",
                         "journey_protocol": study["journey_protocol"],
