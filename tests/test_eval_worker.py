@@ -454,7 +454,8 @@ class TrainingCollectionTests(unittest.TestCase):
                     torch.testing.assert_close(actual, expected)
                     torch.testing.assert_close(actual[:decisions], torch.zeros(decisions))
                     return dict.fromkeys(["policy_loss", "value_loss", "entropy_loss",
-                                          "total_loss", "approx_kl"], 0.0)
+                                          "total_loss", "approx_kl", "exact_kl", "clip_fraction",
+                                          "max_abs_logratio", "preupdate_max_abs_logratio"], 0.0)
 
                 env.lower_ppo = SimpleNamespace(policy_old=policy, update=Mock(side_effect=update))
                 with patch("simulation.design_env.mp.Queue", return_value=results), \
