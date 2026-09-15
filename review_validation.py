@@ -2,8 +2,8 @@
 
 Uses the corrected ControlEnv and demand scaler. Each manifest fixes the
 warmup mode, seeds, demand files and a 450 s measurement horizon. Learned control
-requires a compatible observation version; legacy weights remain usable only
-for reconstructing the learned design. An opt-in journey protocol fixes the
+requires a compatible observation version, and decoding a design checkpoint
+requires compatible readout semantics. An opt-in journey protocol fixes the
 departure cohort and drains it after measurement. No policy training occurs.
 """
 import argparse
@@ -32,7 +32,7 @@ from ppo.models import MLP_ActorCritic
 from ppo.ppo_utils import WelfordNormalizer
 from simulation.control_env import ControlEnv
 from simulation.design_env import DesignEnv
-from utils import require_exposed_heads, signal_slots_from_network
+from utils import load_design_policy, require_exposed_heads, signal_slots_from_network
 
 ROOT = Path(__file__).resolve().parent
 RUN = ROOT / "runs/readout_32/May09_11-34-05"
@@ -137,8 +137,8 @@ def prepare(destination):
     else:
         skip_reason = (f"Learned control is disabled: checkpoint observation version {control_version} "
                        f"is incompatible with version {MLP_ActorCritic.observation_version}. Fresh training is required.")
-    env.normalizer_x = checkpoint["higher"]["norm_x"]
-    env.normalizer_y = checkpoint["higher"]["norm_y"]
+    policy = PPO(**higher).policy
+    env.normalizer_x, env.normalizer_y = load_design_policy(policy, checkpoint["higher"])
     state = env.reset()
     original_network = Path(env.network_dir) / "network_iteration_0.net.xml"
     original_slots = signal_slots_from_network(original_network, INTERSECTION)
@@ -147,8 +147,6 @@ def prepare(destination):
                 "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
                 "crossing_ids": [tid.removesuffix("_mid") for tid in original_slots],
                 "signal_slots": original_slots}
-    policy = PPO(**higher).policy
-    policy.load_state_dict(checkpoint["higher"]["state_dict"])
     policy.eval()
     with torch.no_grad():
         gmm = policy.get_gmm_distribution(Batch.from_data_list([state]), "cpu")[0]

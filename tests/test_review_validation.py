@@ -31,7 +31,7 @@ class ReviewConfigurationTest(unittest.TestCase):
             config.write_text(json.dumps({'hyperparameters': configuration}))
             checkpoint = folder / 'checkpoint.pth'
             checkpoint.write_bytes(b'prepare checkpoint fixture')
-            state = {'lower': {}, 'higher': {'state_dict': {},
+            state = {'lower': {}, 'higher': {'readout_version': 2, 'state_dict': {},
                      'norm_x': {'min': 0, 'max': 100}, 'norm_y': {'min': 0, 'max': 100}}}
             network_dir = folder / 'networks'
             network_dir.mkdir()
@@ -48,7 +48,7 @@ class ReviewConfigurationTest(unittest.TestCase):
                        crossing_ids=['iterreview_0', 'iterreview_1'],
                        signal_slots={'iterreview_0_mid': 0, 'iterreview_1_mid': 1})
             proposals = review.torch.tensor([[[0.25, 0.5], [0.75, 0.5]]])
-            policy = Mock()
+            policy = Mock(readout_version=2)
             policy.act.return_value = (None, proposals, review.torch.tensor(2), None)
             policy.get_gmm_distribution.return_value = [Mock(
                 component_distribution=Mock(mean=proposals[0]),

@@ -25,6 +25,32 @@ class PPOValueLossTests(unittest.TestCase):
                     torch.testing.assert_close(pooled[i], expected.flatten(), rtol=0, atol=0)
                     torch.testing.assert_close(pooled[i], alone[0], rtol=0, atol=0)
 
+    def test_graph_pool_is_continuous_at_node_score_rank_swaps(self):
+        features = torch.tensor([[1., -1.], [-1., 1. - 2e-7]], dtype=torch.float64)
+        perturbed = features.clone()
+        perturbed[1, 1] += 4e-7
+        batch = torch.zeros(2, dtype=torch.long)
+        for k in [1, 2]:
+            with self.subTest(k=k):
+                before = GAT_v2_ActorCritic.custom_global_sort_pool(None, features, batch, k)
+                after = GAT_v2_ActorCritic.custom_global_sort_pool(None, perturbed, batch, k)
+                self.assertLessEqual((after - before).abs().max().item(),
+                                     (perturbed - features).abs().max().item())
+                reordered = GAT_v2_ActorCritic.custom_global_sort_pool(None, features.flip(0), batch, k)
+                torch.testing.assert_close(before, reordered, rtol=0, atol=0)
+
+    def test_graph_pool_selects_and_differentiates_each_feature_independently(self):
+        features = torch.tensor([[-4., -1.], [-2., -3.], [-7., -5.]], requires_grad=True)
+        pooled = GAT_v2_ActorCritic.custom_global_sort_pool(
+            None, features, torch.tensor([0, 0, 1]), 1)
+        torch.testing.assert_close(pooled, torch.tensor([[-2., -1.], [-7., -5.]]))
+        gradients, = torch.autograd.grad(pooled.sum(), features)
+        torch.testing.assert_close(gradients, torch.tensor([[0., 1.], [1., 0.], [1., 1.]]))
+        padded = GAT_v2_ActorCritic.custom_global_sort_pool(
+            None, features, torch.tensor([0, 0, 1]), 3)
+        gradients, = torch.autograd.grad(padded.square().sum(), features)
+        torch.testing.assert_close(gradients, 2 * features)
+
     def test_continuing_fragment_bootstraps_from_next_state(self):
         rewards, values = torch.ones(4), torch.full((4,), 100.0)
         terminals = torch.zeros(4, dtype=torch.bool)
