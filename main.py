@@ -88,6 +88,7 @@ def train(train_config, is_sweep=False, sweep_config=None):
     higher_ppo.policy_old = higher_ppo.policy_old.to(device)
     higher_ppo.policy = higher_ppo.policy.to(device)
 
+    # One-shot design: the original-crossing graph is the context for every proposal, value and final extraction.
     higher_state = higher_env.reset()
     print(f"\nHigher state at reset: {higher_state}")
     higher_memories = Memory()
@@ -127,7 +128,7 @@ def train(train_config, is_sweep=False, sweep_config=None):
         
         # Since the higher agent internally takes a step where a number of parallel lower agents take their own steps, 
         # We return things relevant to both the higher and lower agents. First, for higher.
-        higher_next_state, higher_reward_norm, higher_reward_unnorm, higher_done, info = higher_env.step(merged_proposals, # Act on the environment with merged proposals
+        _, higher_reward_norm, higher_reward_unnorm, higher_done, info = higher_env.step(merged_proposals, # Act on the environment with merged proposals
                                                                                      num_proposals, 
                                                                                      iteration)
         
@@ -151,9 +152,7 @@ def train(train_config, is_sweep=False, sweep_config=None):
                 current_lr_higher = higher_ppo.update_learning_rate(higher_update_count, total_updates_higher)
 
             avg_higher_reward = sum(higher_memories.rewards) / len(higher_memories.rewards)
-            with torch.no_grad():
-                bootstrap_value = higher_ppo.policy_old.critic(higher_next_state, device=device).item()
-            higher_loss = higher_ppo.update(higher_memories, bootstrap_value=bootstrap_value)
+            higher_loss = higher_ppo.update(higher_memories)
             del higher_memories # Reset memory
             higher_memories = Memory()
 
@@ -271,8 +270,6 @@ def train(train_config, is_sweep=False, sweep_config=None):
             writer.add_scalar('Evaluation/Avg_Veh_Wait', eval_veh_avg_wait, higher_env.global_step)
             writer.add_scalar('Evaluation/Avg_Ped_Wait', eval_ped_avg_wait, higher_env.global_step)
             writer.add_scalar('Evaluation/Avg_Eval', lower_avg_eval, higher_env.global_step)
-
-        higher_state = higher_next_state
 
     if is_sweep:
         wandb.finish()

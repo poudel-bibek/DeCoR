@@ -130,7 +130,8 @@ def run_arm(directory, arm, seed, settings, sources):
     higher = PPO(**higher_args)
     initial_controller = policy_digest(env.lower_ppo.policy)
     initial_design = policy_digest(higher.policy)
-    original_state = state = env.reset()
+    # One-shot design: every proposal, value and final extraction uses the original-crossing context.
+    context = env.reset()
     memory = Memory()
     design_updates = 0
     configuration = dict(design_args=d, control_args=ctrl,
@@ -150,7 +151,7 @@ def run_arm(directory, arm, seed, settings, sources):
         higher.policy_old.eval()
         with torch.no_grad():
             _, chosen, n, _ = higher.policy_old.act(
-                original_state, iteration, d["clamp_min"], d["clamp_max"], "cpu",
+                context, iteration, d["clamp_min"], d["clamp_max"], "cpu",
                 training=False, visualize=False)
         env._apply_action(chosen[0, :int(n)].numpy(), iteration)
         return chosen, n
@@ -171,34 +172,31 @@ def run_arm(directory, arm, seed, settings, sources):
             with torch.random.fork_rng(), torch.no_grad():
                 torch.manual_seed(seed + iteration * 7919)
                 raw, proposals, count, logprob = higher.policy_old.act(
-                    state, iteration, d["clamp_min"], d["clamp_max"], "cpu",
+                    context, iteration, d["clamp_min"], d["clamp_max"], "cpu",
                     training=True, visualize=False)
-                value = higher.policy_old.critic(state, device="cpu").item()
+                value = higher.policy_old.critic(context, device="cpu").item()
         elif arm == "random_layout":
             proposals, count = random_proposals(joint["rounds"][iteration - 1]["crossings"], rng)
         old_updates = env.lower_update_count
         old_steps = env.global_step
         # Match controller-training episode seeds by experience, including sequential stage two.
         rollout_round = iteration - design_rounds if arm == "sequential" and not fixed_control else iteration
-        next_state, reward, raw_reward, done, info = env.step(
+        _, reward, raw_reward, done, info = env.step(
             proposals, count, rollout_round, fixed_control=fixed_control,
             update_layout=optimize_design or arm == "random_layout")
         assert env.global_step - old_steps == settings["workers"] * 360
         losses = None
         if optimize_design:
-            memory.append(state, raw, count, value, logprob, reward, done)
+            memory.append(context, raw, count, value, logprob, reward, done)
             if iteration % d["higher_update_freq"] == 0:
                 design_updates += 1
                 if d["higher_anneal_lr"]:
                     higher.update_learning_rate(design_updates, settings["design_horizon_rounds"] // d["higher_update_freq"])
                 before = design_diagnostics(higher, memory)
-                with torch.no_grad():
-                    bootstrap = higher.policy_old.critic(next_state, device="cpu").item()
-                losses = {key: float(value) for key, value in higher.update(memory, bootstrap_value=bootstrap).items()}
+                losses = {key: float(value) for key, value in higher.update(memory).items()}
                 losses["rollout_before_update"] = before
                 losses["rollout_after_update"] = design_diagnostics(higher, memory)
                 memory = Memory()
-        state = next_state
         record["rounds"].append({"iteration": iteration, "rollout_round": rollout_round, "fixed_control": fixed_control,
                                 "crossings": int(count), "proposals": proposals[0, :int(count)].tolist(),
                                 "simulation_steps": env.global_step, "design_reward": float(raw_reward),
