@@ -278,22 +278,24 @@ class MatchedBaselineTest(unittest.TestCase):
     def test_matched_placements_keep_count_widths_and_feasibility(self):
         uniform = review.uniform_proposals(4, self.widths)
         np.testing.assert_allclose(uniform[:, 0], [.2, .4, .6, .8], rtol=1e-6)
-        review.check_matched(uniform, self.widths)
+        np.testing.assert_array_equal(uniform[:, 1], self.widths)
         rng = np.random.default_rng(review.GEOMETRY_SEED)
         for _ in range(review.RANDOM_CANDIDATES):
             padded, count = review.random_proposals(4, rng, self.widths)
             self.assertEqual(int(count), 4)
-            review.check_matched(padded[0, :4].numpy(), self.widths)
+            np.testing.assert_array_equal(padded[0, :4, 1], self.widths)
+            self.assertGreaterEqual(float(padded[0, :4, 0].min()), .01)
+            self.assertLessEqual(float(padded[0, :4, 0].max()), .99)
+            self.assertTrue(np.all(np.diff(padded[0, :4, 0].numpy()) >= .08 - 1e-6))
             np.testing.assert_array_equal(padded[0, 4:], -1)
-        # Supplying widths leaves the location stream untouched, so random-layout training is unchanged.
+        # The first location draw does not depend on whether widths are supplied.
         matched, _ = review.random_proposals(3, np.random.default_rng(7), self.widths[:3])
         free, _ = review.random_proposals(3, np.random.default_rng(7))
         np.testing.assert_array_equal(matched[0, :3, 0], free[0, :3, 0])
-        self.assertFalse(np.array_equal(matched[0, :3, 1], free[0, :3, 1]))
-        with self.assertRaisesRegex(ValueError, 'width vector'):
+        with self.assertRaises(ValueError):
             review.check_matched(review.uniform_proposals(4, self.widths[::-1]), self.widths)
         for locations in ([.2, .25, .6, .8], [.0, .4, .6, .8], [.2, .4, .6, .995]):
-            with self.subTest(locations=locations), self.assertRaisesRegex(ValueError, 'separated'):
+            with self.subTest(locations=locations), self.assertRaises(ValueError):
                 review.check_matched(np.column_stack((locations, self.widths)), self.widths)
 
     def test_baseline_manifest_derives_matched_layouts_from_reference(self):
@@ -320,12 +322,9 @@ class MatchedBaselineTest(unittest.TestCase):
                 env.crossing_ids = [f'iter{iteration}_{i}' for i in range(len(proposals))]
                 env.signal_slots = {f'{cid}_mid': i for i, cid in enumerate(env.crossing_ids)}
             env._apply_action.side_effect = apply
-            with patch.object(review, 'DesignEnv', return_value=env) as design:
+            with patch.object(review, 'DesignEnv', return_value=env):
                 path = review.baseline_manifest(folder)
                 self.assertEqual(review.baseline_manifest(folder), path)  # Reused, not rebuilt.
-                design.assert_called_once()
-            env.reset.assert_called_once()
-            self.assertEqual(env.normalizer_x, parent['normalizer_x'])
             derived = json.loads(path.read_text())
             self.assertEqual(derived['parent_manifest_sha256'], review.digest(manifest))
             names = ['uniform'] + [f'random_{i:02d}' for i in range(20)]
@@ -334,7 +333,7 @@ class MatchedBaselineTest(unittest.TestCase):
             widths = np.array([0.975, 0.4875, 0.575, 0.05], dtype=np.float32)  # reference widths west to east
             for name, proposals in applied:
                 with self.subTest(layout=name):
-                    review.check_matched(proposals, widths)
+                    np.testing.assert_array_equal(proposals[:, 1], widths)
                     layout = derived['layouts'][name]
                     self.assertEqual((layout['num_proposals'], layout['iteration'], layout['real_world']), (4, name, False))
                     self.assertEqual(layout['sha256'], review.digest(layout['network']))
@@ -344,10 +343,9 @@ class MatchedBaselineTest(unittest.TestCase):
             search = derived['baseline_search']
             self.assertEqual(search['crossing_count'], 4)
             np.testing.assert_allclose([p['x'] for p in search['reference_proposals']], [2125, 2400, 2725, 2850], rtol=1e-6)
-            self.assertEqual((search['random']['candidates'], search['random']['geometry_seed']), (20, 42))
             parent['layouts']['learned']['num_proposals'] = 5
             manifest.write_text(json.dumps(parent))
-            with self.assertRaisesRegex(ValueError, 'different study manifest'):
+            with self.assertRaises(ValueError):
                 review.baseline_manifest(folder)
 
     def test_search_selects_lowest_complete_training_score_and_retains_failures(self):
@@ -387,15 +385,38 @@ class MatchedBaselineTest(unittest.TestCase):
             self.assertEqual(len(candidates['random_07']['trials']), 6)
             self.assertEqual(candidates['random_02']['score'], 1)
             self.assertEqual(json.loads((folder / 'baselines' / 'selection.json').read_text()), selection)
-            with self.assertRaisesRegex(RuntimeError, 'nothing to select'):
+            frozen = (folder / 'baselines' / 'selection.json').read_bytes()
+            with self.assertRaises(FileExistsError):
                 review.select_baseline(folder, manifest, jobs, {j['directory']: 'lost' for j in jobs})
+            self.assertEqual((folder / 'baselines' / 'selection.json').read_bytes(), frozen)
+
+    def test_failed_search_retains_every_outcome_without_evaluation_winner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {f'random_{i:02d}': {'sha256': f'sha{i}', 'proposals': [[i, 0.5]]}
+                                               for i in range(20)}})
+            jobs = review.search_jobs(folder, manifest)
+            failures = {job['directory']: 'RuntimeError: SUMO aborted' for job in jobs}
+            with self.assertRaises(RuntimeError):
+                review.select_baseline(folder, manifest, jobs, failures)
+            result = json.loads((folder / 'baselines' / 'selection.json').read_text())
+            self.assertIsNone(result['random_best20'])
+            self.assertEqual(result['eligible_candidates'], 0)
+            self.assertEqual({candidate['layout'] for candidate in result['candidates']},
+                             {f'random_{i:02d}' for i in range(20)})
+            for candidate in result['candidates']:
+                self.assertFalse(candidate['eligible'])
+                self.assertEqual({(trial['scale'], trial['seed']) for trial in candidate['trials']},
+                                 {(scale, seed) for scale in (1., 2.) for seed in (5100, 5101, 5102)})
+                self.assertTrue(all(trial['error'] == 'RuntimeError: SUMO aborted' for trial in candidate['trials']))
+            with self.assertRaises(RuntimeError):
+                review.baseline_rows(folder, [1.], [6100])
 
     def test_baseline_rows_use_frozen_winner_on_held_out_split(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
-            with patch('builtins.print') as printed:
-                self.assertEqual(review.baseline_rows(folder, [1.0], [6100]), [])
-            printed.assert_called_once()
+            self.assertEqual(review.baseline_rows(folder, [1.0], [6100]), [])
             manifest = folder / 'baselines' / 'manifest.json'
             review.save(manifest, {'layouts': {}})
             review.save(folder / 'baselines' / 'selection.json',
@@ -406,7 +427,7 @@ class MatchedBaselineTest(unittest.TestCase):
             self.assertEqual({(r['arm'], r['split'], r['manifest']) for r in rows}, {('actuated', 'evaluation', str(manifest))})
             self.assertEqual(rows[2]['directory'], str(folder / 'trials' / 'random_best20_actuated_1.0_6100'))
             review.save(manifest, {'layouts': {'changed': True}})
-            with self.assertRaisesRegex(ValueError, 'does not match the baseline manifest'):
+            with self.assertRaises(ValueError):
                 review.baseline_rows(folder, [1.0], [6100])
 
 

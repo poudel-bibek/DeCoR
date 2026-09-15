@@ -81,8 +81,8 @@ def physical_proposals(proposals, normalizer_x, design):
 def random_proposals(count, rng, widths=None):
     """Uniform feasible locations with the learned policy's minimum separation.
 
-    Widths are random unless a west-to-east width vector is given; the location
-    stream is identical either way.
+    Widths are random unless a west-to-east width vector is given. Fixed widths
+    consume only location draws; the existing random-width training path is unchanged.
     """
     locations = LOCATION_LOW + np.arange(count) * LOCATION_GAP
     locations += np.sort(rng.random(count)) * (LOCATION_HIGH - LOCATION_LOW - (count - 1) * LOCATION_GAP)
@@ -178,6 +178,9 @@ def selection_score(result):
 
 def select_baseline(directory, manifest, jobs, failures):
     """Rank candidates with every selection trial complete; failures stay recorded and ineligible."""
+    selection_path = directory / "baselines" / "selection.json"
+    if selection_path.exists():
+        raise FileExistsError("Baseline selection is frozen. Use a fresh study directory.")
     layouts = json.loads(manifest.read_text())["layouts"]
     candidates = []
     for index in range(RANDOM_CANDIDATES):
@@ -201,15 +204,17 @@ def select_baseline(directory, manifest, jobs, failures):
                            "proposals": layouts[name]["proposals"], "trials": trials, "eligible": eligible,
                            "score": statistics.mean(scores) if eligible else None})
     eligible = [c for c in candidates if c["eligible"]]
-    if not eligible:
-        raise RuntimeError("No random candidate completed every selection trial; nothing to select.")
-    winner = min(eligible, key=lambda c: (c["score"], c["index"]))
-    selection = {"manifest_sha256": digest(manifest), "uniform": "uniform", "random_best20": winner["layout"],
-                 "random_best20_network_sha256": winner["network_sha256"], "random_best20_score": winner["score"],
+    winner = min(eligible, key=lambda c: (c["score"], c["index"])) if eligible else None
+    selection = {"manifest_sha256": digest(manifest), "uniform": "uniform",
+                 "random_best20": winner["layout"] if winner else None,
+                 "random_best20_network_sha256": winner["network_sha256"] if winner else None,
+                 "random_best20_score": winner["score"] if winner else None,
                  "eligible_candidates": len(eligible), "failed_or_incomplete_candidates": len(candidates) - len(eligible),
                  "metric": "training-window selection score; not held-out performance", "tie_break": "lowest candidate index",
                  "candidates": candidates}
-    save(directory / "baselines" / "selection.json", selection)
+    save(selection_path, selection)
+    if winner is None:
+        raise RuntimeError("No random candidate completed every selection trial; nothing to select.")
     return selection
 
 
@@ -223,6 +228,8 @@ def baseline_rows(directory, scales, seeds):
     manifest = directory / "baselines" / "manifest.json"
     if digest(manifest) != selection["manifest_sha256"]:
         raise ValueError("Baseline selection does not match the baseline manifest. Rerun search in a fresh study directory.")
+    if selection["random_best20"] is None:
+        raise RuntimeError("Baseline search has no eligible winner. Use a fresh study directory.")
     return [dict(manifest=str(manifest), layout=selection[name], arm="actuated", scale=scale, seed=seed,
                  split="evaluation", directory=str(directory / "trials" / f"{name}_actuated_{scale}_{seed}"))
             for name in ("uniform", "random_best20") for scale in scales for seed in seeds]
@@ -690,6 +697,8 @@ def main():
         print(metadata["learned_control_skip_reason"], flush=True)
     jobs = []
     if args.operation == "search":
+        if (directory / "baselines" / "selection.json").exists():
+            raise FileExistsError("Baseline selection is frozen. Use a fresh study directory.")
         baseline = baseline_manifest(directory)
         jobs = search_jobs(directory, baseline)
         failures = run_jobs(jobs, fail_fast=False)
