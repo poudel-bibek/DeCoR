@@ -963,7 +963,9 @@ class GAT_v2_ActorCritic(nn.Module):
             markers (tuple of ndarrays): Markers to plot, shape (N, 2).
         """
         fs = 16
-        base_save_path = f"{run_dir}/gmm_iterations/gmm_i_{iteration}_b{batch_index}"
+        file_stem = f"gmm_i_{iteration}_b{batch_index}"
+        plot_dir = f"{run_dir}/generated/gmm_iterations"
+        os.makedirs(plot_dir, exist_ok=True)
         
         # Sample from the GMM
         samples = gmm_single.sample((num_samples,))  # Shape: (num_samples, 2)
@@ -1001,7 +1003,7 @@ class GAT_v2_ActorCritic(nn.Module):
         
         plt.tight_layout()
         # plt.show()
-        plt.savefig(f"{base_save_path}.png")
+        plt.savefig(f"{plot_dir}/{file_stem}.png")
         plt.close()
 
         # Create second plot with markers if provided
@@ -1030,10 +1032,10 @@ class GAT_v2_ActorCritic(nn.Module):
             ax.set_title('GMM with Samples', fontweight='bold', fontsize=fs)
             ax.tick_params(axis='both', which='major', labelsize=fs-2)
             plt.tight_layout()
-            plt.savefig(f"{base_save_path}_markers.png")
+            plt.savefig(f"{plot_dir}/{file_stem}_markers.png")
 
             # save data as a file
             data = gmm_single, markers
-            with open(f"{base_save_path}_data.pkl", "wb") as f:
+            with open(f"{run_dir}/gmm_iterations/{file_stem}_data.pkl", "wb") as f:
                 pickle.dump(data, f)
             plt.close()
