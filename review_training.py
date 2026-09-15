@@ -25,7 +25,7 @@ from config import classify_and_return_args, get_config
 from ppo.ppo import PPO
 from ppo.ppo_utils import Memory, WelfordNormalizer
 from torch_geometric.data import Batch
-from review_validation import ROOT, JOURNEY_PROTOCOL, digest, run_jobs, save
+from review_validation import ROOT, JOURNEY_PROTOCOL, digest, random_proposals, run_jobs, save
 from simulation.design_env import DesignEnv
 from utils import SLOT_PROTOCOL, save_policy
 
@@ -67,17 +67,6 @@ def design_diagnostics(ppo, memory):
                        "max_abs_logratio": float(logratio.abs().max())}
     ppo.policy.train(was_training)
     return diagnostics
-
-
-def random_proposals(count, rng):
-    """Uniform feasible locations with the learned policy's minimum separation."""
-    gap, low, high = .08, .01, .99
-    locations = low + np.arange(count) * gap
-    locations += np.sort(rng.random(count)) * (high - low - (count - 1) * gap)
-    widths = rng.uniform(low, high, count)
-    proposals = torch.full((1, 10, 2), -1.0)
-    proposals[0, :count] = torch.tensor(np.column_stack((locations, widths)), dtype=torch.float32)
-    return proposals, torch.tensor(count)
 
 
 def layout_record(env, proposals, count):

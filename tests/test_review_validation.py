@@ -19,7 +19,7 @@ class ReviewConfigurationTest(unittest.TestCase):
             for path in inputs:
                 path.write_text('<routes/>')
             configuration = {
-                'design_args': {'clamp_min': 0.01, 'clamp_max': 0.99},
+                'design_args': {'clamp_min': 0.01, 'clamp_max': 0.99, 'min_thickness': 2.0, 'max_thickness': 15.0},
                 'control_args': {'warmup_steps': [40, 140],
                                  'vehicle_input_trips': str(inputs[0]),
                                  'pedestrian_input_trips': str(inputs[1])},
@@ -270,6 +270,144 @@ class ReviewConfigurationTest(unittest.TestCase):
                         env.reset.assert_not_called()
                     else:
                         env.reset.assert_called_once()
+
+
+class MatchedBaselineTest(unittest.TestCase):
+    widths = np.array([0.975, 0.575, 0.05, 0.4875], dtype=np.float32)
+
+    def test_matched_placements_keep_count_widths_and_feasibility(self):
+        uniform = review.uniform_proposals(4, self.widths)
+        np.testing.assert_allclose(uniform[:, 0], [.2, .4, .6, .8], rtol=1e-6)
+        review.check_matched(uniform, self.widths)
+        rng = np.random.default_rng(review.GEOMETRY_SEED)
+        for _ in range(review.RANDOM_CANDIDATES):
+            padded, count = review.random_proposals(4, rng, self.widths)
+            self.assertEqual(int(count), 4)
+            review.check_matched(padded[0, :4].numpy(), self.widths)
+            np.testing.assert_array_equal(padded[0, 4:], -1)
+        # Supplying widths leaves the location stream untouched, so random-layout training is unchanged.
+        matched, _ = review.random_proposals(3, np.random.default_rng(7), self.widths[:3])
+        free, _ = review.random_proposals(3, np.random.default_rng(7))
+        np.testing.assert_array_equal(matched[0, :3, 0], free[0, :3, 0])
+        self.assertFalse(np.array_equal(matched[0, :3, 1], free[0, :3, 1]))
+        with self.assertRaisesRegex(ValueError, 'width vector'):
+            review.check_matched(review.uniform_proposals(4, self.widths[::-1]), self.widths)
+        for locations in ([.2, .25, .6, .8], [.0, .4, .6, .8], [.2, .4, .6, .995]):
+            with self.subTest(locations=locations), self.assertRaisesRegex(ValueError, 'separated'):
+                review.check_matched(np.column_stack((locations, self.widths)), self.widths)
+
+    def test_baseline_manifest_derives_matched_layouts_from_reference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            networks = folder / 'geometry'
+            networks.mkdir()
+            reference = [[0.85, 0.05], [0.125, 0.975], [0.4, 0.4875], [0.725, 0.575]]  # merged order, not west to east
+            parent = {'configuration': {'design_args': {'min_thickness': 2.0, 'max_thickness': 15.0},
+                                        'control_args': {}, 'higher_ppo_args': {}, 'lower_ppo_args': {}},
+                      'normalizer_x': {'min': 2000.0, 'max': 3000.0},
+                      'layouts': {'learned': {'num_proposals': 4}},
+                      'evaluation_proposals': [{'normalized': p} for p in reference]}
+            manifest = folder / 'manifest.json'
+            manifest.write_text(json.dumps(parent))
+            applied = []
+            env = Mock(extreme_edge_dict={'leftmost': {'old': 'a', 'new': None}})
+
+            def apply(proposals, iteration):
+                applied.append((iteration, np.array(proposals, dtype=np.float32)))
+                path = networks / f'network_iteration_{iteration}.net.xml'
+                path.write_text(f'<net id="{iteration}"/>')
+                env.current_net_file_path = str(path)
+                env.crossing_ids = [f'iter{iteration}_{i}' for i in range(len(proposals))]
+                env.signal_slots = {f'{cid}_mid': i for i, cid in enumerate(env.crossing_ids)}
+            env._apply_action.side_effect = apply
+            with patch.object(review, 'DesignEnv', return_value=env) as design:
+                path = review.baseline_manifest(folder)
+                self.assertEqual(review.baseline_manifest(folder), path)  # Reused, not rebuilt.
+                design.assert_called_once()
+            env.reset.assert_called_once()
+            self.assertEqual(env.normalizer_x, parent['normalizer_x'])
+            derived = json.loads(path.read_text())
+            self.assertEqual(derived['parent_manifest_sha256'], review.digest(manifest))
+            names = ['uniform'] + [f'random_{i:02d}' for i in range(20)]
+            self.assertEqual([name for name, _ in applied], names)
+            self.assertEqual(list(derived['layouts']), names)
+            widths = np.array([0.975, 0.4875, 0.575, 0.05], dtype=np.float32)  # reference widths west to east
+            for name, proposals in applied:
+                with self.subTest(layout=name):
+                    review.check_matched(proposals, widths)
+                    layout = derived['layouts'][name]
+                    self.assertEqual((layout['num_proposals'], layout['iteration'], layout['real_world']), (4, name, False))
+                    self.assertEqual(layout['sha256'], review.digest(layout['network']))
+                    self.assertEqual([p['normalized'] for p in layout['proposals']], proposals.tolist())
+                    self.assertEqual(len(layout['signal_slots']), 4)
+            np.testing.assert_allclose(applied[0][1][:, 0], [.2, .4, .6, .8], rtol=1e-6)
+            search = derived['baseline_search']
+            self.assertEqual(search['crossing_count'], 4)
+            np.testing.assert_allclose([p['x'] for p in search['reference_proposals']], [2125, 2400, 2725, 2850], rtol=1e-6)
+            self.assertEqual((search['random']['candidates'], search['random']['geometry_seed']), (20, 42))
+            parent['layouts']['learned']['num_proposals'] = 5
+            manifest.write_text(json.dumps(parent))
+            with self.assertRaisesRegex(ValueError, 'different study manifest'):
+                review.baseline_manifest(folder)
+
+    def test_search_selects_lowest_complete_training_score_and_retains_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {f'random_{i:02d}': {'sha256': f'sha{i}', 'proposals': [[i, 0.5]]}
+                                               for i in range(20)}})
+            jobs = review.search_jobs(folder, manifest)
+            self.assertEqual(len(jobs), 120)
+            self.assertEqual({(j['arm'], j['split']) for j in jobs}, {('actuated', 'training')})
+            self.assertEqual({(j['scale'], j['seed']) for j in jobs},
+                             {(s, d) for s in (1., 2.) for d in (5100, 5101, 5102)})
+            # Score equals the index, except: 00 scores 20, 01 and 02 tie at 1; 05 has the lowest partial scores but one
+            # failed trial; 07 lacks one result. Zero scheduled pedestrians exercise the max(scheduled, 1) rule.
+            failures = {}
+            for job in jobs:
+                index = int(job['layout'][-2:])
+                if index == 5 and (job['scale'], job['seed']) == (2., 5102):
+                    failures[job['directory']] = 'RuntimeError: SUMO aborted'
+                    continue
+                if index == 7 and (job['scale'], job['seed']) == (1., 5100):
+                    continue
+                score = {0: 20, 2: 1, 5: 0}.get(index, index)
+                traffic = {'vehicle': {'wait_sum_1s': score * 10, 'backlog_age_at_end_s': 0, 'scheduled': 10},
+                           'pedestrian': {'wait_sum_1s': 0, 'backlog_age_at_end_s': 0, 'scheduled': 0}}
+                review.save(Path(job['directory']) / 'result.json', {'traffic': traffic})
+            selection = review.select_baseline(folder, manifest, jobs, failures)
+            self.assertEqual((selection['random_best20'], selection['random_best20_network_sha256'],
+                              selection['random_best20_score']), ('random_01', 'sha1', 1))
+            self.assertEqual((selection['eligible_candidates'], selection['failed_or_incomplete_candidates']), (18, 2))
+            candidates = {c['layout']: c for c in selection['candidates']}
+            self.assertEqual(len(candidates), 20)
+            self.assertEqual((candidates['random_05']['eligible'], candidates['random_05']['score']), (False, None))
+            self.assertEqual([t['error'] for t in candidates['random_05']['trials'] if 'error' in t], ['RuntimeError: SUMO aborted'])
+            self.assertEqual([t['error'] for t in candidates['random_07']['trials'] if 'error' in t], ['missing result'])
+            self.assertEqual(len(candidates['random_07']['trials']), 6)
+            self.assertEqual(candidates['random_02']['score'], 1)
+            self.assertEqual(json.loads((folder / 'baselines' / 'selection.json').read_text()), selection)
+            with self.assertRaisesRegex(RuntimeError, 'nothing to select'):
+                review.select_baseline(folder, manifest, jobs, {j['directory']: 'lost' for j in jobs})
+
+    def test_baseline_rows_use_frozen_winner_on_held_out_split(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            with patch('builtins.print') as printed:
+                self.assertEqual(review.baseline_rows(folder, [1.0], [6100]), [])
+            printed.assert_called_once()
+            manifest = folder / 'baselines' / 'manifest.json'
+            review.save(manifest, {'layouts': {}})
+            review.save(folder / 'baselines' / 'selection.json',
+                        {'manifest_sha256': review.digest(manifest), 'uniform': 'uniform', 'random_best20': 'random_11'})
+            rows = review.baseline_rows(folder, [1.0, 2.0], [6100])
+            self.assertEqual([(r['layout'], r['scale'], r['seed']) for r in rows],
+                             [('uniform', 1.0, 6100), ('uniform', 2.0, 6100), ('random_11', 1.0, 6100), ('random_11', 2.0, 6100)])
+            self.assertEqual({(r['arm'], r['split'], r['manifest']) for r in rows}, {('actuated', 'evaluation', str(manifest))})
+            self.assertEqual(rows[2]['directory'], str(folder / 'trials' / 'random_best20_actuated_1.0_6100'))
+            review.save(manifest, {'layouts': {'changed': True}})
+            with self.assertRaisesRegex(ValueError, 'does not match the baseline manifest'):
+                review.baseline_rows(folder, [1.0], [6100])
 
 
 class JourneyCohortTest(unittest.TestCase):

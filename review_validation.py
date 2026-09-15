@@ -5,6 +5,9 @@ warmup mode, seeds, demand files and a 450 s measurement horizon. Learned contro
 requires a compatible observation version; legacy weights remain usable only
 for reconstructing the learned design. An opt-in journey protocol fixes the
 departure cohort and drains it after measurement. No policy training occurs.
+Placement-matched baselines (Uniform and best-of-20 random search) keep the
+reference layout's crossing count and west-to-east widths and vary placement
+only; random search selects on training-window trials under actuated control.
 """
 import argparse
 from collections import Counter
@@ -40,6 +43,9 @@ CHECKPOINT = RUN / "saved_policies/policy_at_7603200.pth"
 INTERSECTION = "cluster_172228464_482708521_9687148201_9687148202_#5more"
 JOURNEY_PROTOCOL = {"version": 1, "warmup_s": 100, "measurement_horizon_s": 450,
                     "drain_cap_s": 1800}
+SELECTION_SCALES, SELECTION_SEEDS = (1., 2.), (5100, 5101, 5102)  # training-window selection split
+LOCATION_GAP, LOCATION_LOW, LOCATION_HIGH = .08, .01, .99  # learned merge separation and location clamps
+GEOMETRY_SEED, RANDOM_CANDIDATES = 42, 20
 
 
 def digest(path):
@@ -62,6 +68,164 @@ def arguments(configuration=None):
     d.update(save_graph_images=False, save_gmm_plots=False)
     higher["device"] = lower["device"] = "cpu"
     return d, ctrl, higher, lower
+
+
+def physical_proposals(proposals, normalizer_x, design):
+    """Normalized (location, width) rows as corridor x in metres and crossing width in metres."""
+    span = normalizer_x["max"] - normalizer_x["min"]
+    thickness = design["max_thickness"] - design["min_thickness"]
+    return [{"x": float(normalizer_x["min"] + x * span), "width": float(design["min_thickness"] + w * thickness),
+             "normalized": [float(x), float(w)]} for x, w in proposals]
+
+
+def random_proposals(count, rng, widths=None):
+    """Uniform feasible locations with the learned policy's minimum separation.
+
+    Widths are random unless a west-to-east width vector is given; the location
+    stream is identical either way.
+    """
+    locations = LOCATION_LOW + np.arange(count) * LOCATION_GAP
+    locations += np.sort(rng.random(count)) * (LOCATION_HIGH - LOCATION_LOW - (count - 1) * LOCATION_GAP)
+    if widths is None:
+        widths = rng.uniform(LOCATION_LOW, LOCATION_HIGH, count)
+    proposals = torch.full((1, 10, 2), -1.0)
+    proposals[0, :count] = torch.tensor(np.column_stack((locations, widths)), dtype=torch.float32)
+    return proposals, torch.tensor(count)
+
+
+def uniform_proposals(count, widths):
+    """Evenly spaced interior locations k/(count+1): the historical .2/.4/.6/.8 form for any count."""
+    locations = np.arange(1, count + 1) / (count + 1)
+    return np.column_stack((locations, widths)).astype(np.float32)
+
+
+def check_matched(proposals, widths):
+    """Placement-only variation: ascending feasible locations and exactly the reference widths."""
+    proposals = np.asarray(proposals, dtype=np.float32)
+    if len(proposals) != len(widths) or not np.array_equal(proposals[:, 1], np.asarray(widths, dtype=np.float32)):
+        raise ValueError("Baseline widths must equal the reference west-to-east width vector.")
+    locations = proposals[:, 0]
+    if locations.min() < LOCATION_LOW or locations.max() > LOCATION_HIGH or np.any(np.diff(locations) < LOCATION_GAP - 1e-6):
+        raise ValueError("Baseline locations must be ascending, clamped and separated like learned proposals.")
+
+
+def reference_proposals(manifest, layout="learned"):
+    """Declared reference geometry west to east; its crossing count and width vector are matched."""
+    proposals = np.array(sorted(p["normalized"] for p in manifest["evaluation_proposals"]), dtype=np.float32)
+    if len(proposals) != manifest["layouts"][layout]["num_proposals"]:
+        raise ValueError("Manifest proposals do not match the reference layout crossing count.")
+    return proposals
+
+
+def baseline_manifest(directory):
+    """Derive Uniform and predeclared random placements matched to the reference; reuse if already derived."""
+    parent_path = directory / "manifest.json"
+    parent_sha256 = digest(parent_path)
+    path = directory / "baselines" / "manifest.json"
+    if path.exists():
+        if json.loads(path.read_text())["parent_manifest_sha256"] != parent_sha256:
+            raise ValueError("Baseline manifest derives from a different study manifest. Use a fresh study directory.")
+        return path
+    parent = json.loads(parent_path.read_text())
+    reference = reference_proposals(parent)
+    count, widths = len(reference), reference[:, 1]
+    torch.set_num_threads(1)
+    d, ctrl, _, lower = arguments(parent["configuration"])
+    d["save_dir"] = str(directory / "baselines" / "geometry")
+    env = DesignEnv(d, ctrl, lower, d["save_dir"])
+    env.normalizer_x = parent["normalizer_x"]
+    env.reset()
+    rng = np.random.default_rng(GEOMETRY_SEED)  # Geometry only; every trial seeds its own simulation.
+    candidates = {"uniform": uniform_proposals(count, widths)}
+    for index in range(RANDOM_CANDIDATES):
+        padded, _ = random_proposals(count, rng, widths)
+        candidates[f"random_{index:02d}"] = padded[0, :count].numpy()
+    layouts = {}
+    for name, proposals in candidates.items():
+        check_matched(proposals, widths)
+        env._apply_action(proposals, name)
+        network = str(Path(env.current_net_file_path).resolve())
+        layouts[name] = {"network": network, "sha256": digest(network), "iteration": name,
+                         "num_proposals": count, "real_world": False,
+                         "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
+                         "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots),
+                         "proposals": physical_proposals(proposals, env.normalizer_x, d)}
+    search = {"comparison": "placement-matched: reference crossing count and west-to-east widths are kept; only locations vary. Count/width search is a separate study.",
+              "reference_layout": "learned", "crossing_count": count,
+              "reference_proposals": physical_proposals(reference, env.normalizer_x, d),
+              "uniform": "interior locations k/(n+1)",
+              "random": {"candidates": RANDOM_CANDIDATES, "geometry_seed": GEOMETRY_SEED,
+                         "sampler": f"random_proposals: ascending locations in [{LOCATION_LOW}, {LOCATION_HIGH}] with at least {LOCATION_GAP} normalized separation; independent of simulation and demand seeds"},
+              "selection": {"arm": "actuated", "split": "training", "scales": list(SELECTION_SCALES), "seeds": list(SELECTION_SEEDS),
+                            "metric": "mean over selection trials of the sum over road-user classes of (wait_sum_1s + backlog_age_at_end_s) / max(scheduled, 1); lower is better. A selection metric, not travel time or full-cohort delay.",
+                            "tie_break": "lowest candidate index", "failed_or_incomplete_candidates": "recorded and ineligible"}}
+    save(path, dict(parent, layouts=layouts, parent_manifest=str(parent_path), parent_manifest_sha256=parent_sha256,
+                    baseline_search=search))
+    return path
+
+
+def search_jobs(directory, manifest):
+    """Training-window actuated trials for every predeclared random candidate; no held-out demand."""
+    return [dict(manifest=str(manifest), layout=f"random_{index:02d}", arm="actuated", scale=scale, seed=seed,
+                 split="training", directory=str(directory / "baselines" / "search" / f"random_{index:02d}_{scale}_{seed}"))
+            for index in range(RANDOM_CANDIDATES) for scale in SELECTION_SCALES for seed in SELECTION_SEEDS]
+
+
+def selection_score(result):
+    """Equal weight per road-user class; include outstanding insertion backlog. Lower is better."""
+    return sum((x["wait_sum_1s"] + x["backlog_age_at_end_s"]) / max(x["scheduled"], 1) for x in result["traffic"].values())
+
+
+def select_baseline(directory, manifest, jobs, failures):
+    """Rank candidates with every selection trial complete; failures stay recorded and ineligible."""
+    layouts = json.loads(manifest.read_text())["layouts"]
+    candidates = []
+    for index in range(RANDOM_CANDIDATES):
+        name = f"random_{index:02d}"
+        trials = []
+        for job in jobs:
+            if job["layout"] != name:
+                continue
+            entry = {"scale": job["scale"], "seed": job["seed"]}
+            path = Path(job["directory"]) / "result.json"
+            if job["directory"] in failures:
+                entry["error"] = failures[job["directory"]]
+            elif not path.exists():
+                entry["error"] = "missing result"
+            else:
+                entry["score"] = selection_score(json.loads(path.read_text()))
+            trials.append(entry)
+        scores = [t["score"] for t in trials if "score" in t]
+        eligible = len(scores) == len(trials) == len(SELECTION_SCALES) * len(SELECTION_SEEDS)
+        candidates.append({"layout": name, "index": index, "network_sha256": layouts[name]["sha256"],
+                           "proposals": layouts[name]["proposals"], "trials": trials, "eligible": eligible,
+                           "score": statistics.mean(scores) if eligible else None})
+    eligible = [c for c in candidates if c["eligible"]]
+    if not eligible:
+        raise RuntimeError("No random candidate completed every selection trial; nothing to select.")
+    winner = min(eligible, key=lambda c: (c["score"], c["index"]))
+    selection = {"manifest_sha256": digest(manifest), "uniform": "uniform", "random_best20": winner["layout"],
+                 "random_best20_network_sha256": winner["network_sha256"], "random_best20_score": winner["score"],
+                 "eligible_candidates": len(eligible), "failed_or_incomplete_candidates": len(candidates) - len(eligible),
+                 "metric": "training-window selection score; not held-out performance", "tie_break": "lowest candidate index",
+                 "candidates": candidates}
+    save(directory / "baselines" / "selection.json", selection)
+    return selection
+
+
+def baseline_rows(directory, scales, seeds):
+    """Held-out actuated rows for the Uniform layout and the frozen random-search winner."""
+    selection_path = directory / "baselines" / "selection.json"
+    if not selection_path.exists():
+        print("No baseline selection; run search to add uniform and random_best20 rows.", flush=True)
+        return []
+    selection = json.loads(selection_path.read_text())
+    manifest = directory / "baselines" / "manifest.json"
+    if digest(manifest) != selection["manifest_sha256"]:
+        raise ValueError("Baseline selection does not match the baseline manifest. Rerun search in a fresh study directory.")
+    return [dict(manifest=str(manifest), layout=selection[name], arm="actuated", scale=scale, seed=seed,
+                 split="evaluation", directory=str(directory / "trials" / f"{name}_actuated_{scale}_{seed}"))
+            for name in ("uniform", "random_best20") for scale in scales for seed in seeds]
 
 
 def restrict_departure_cohort(path, tag, cutoff):
@@ -159,8 +323,7 @@ def prepare(destination):
             _, _, n, _ = policy.act(state, None, d["clamp_min"], d["clamp_max"], "cpu", training=True)
             counts[int(n.item())] += 1
     span = env.normalizer_x["max"] - env.normalizer_x["min"]
-    physical = [{"x": float(env.normalizer_x["min"] + x * span),
-                 "width": float(2 + w * 13), "normalized": [float(x), float(w)]} for x, w in proposals]
+    physical = physical_proposals(proposals, env.normalizer_x, d)
     env._apply_action(proposals, "review")
     learned = {"network": str(Path(env.current_net_file_path).resolve()),
                "iteration": "review", "num_proposals": len(proposals), "real_world": False,
@@ -487,17 +650,31 @@ def trial(job):
     return str(result_path)
 
 
-def run_jobs(jobs):
+def run_jobs(jobs, fail_fast=True):
+    """Run trials in parallel. Failures raise, or with fail_fast=False are returned by directory."""
+    failures = {}
     with ProcessPoolExecutor(max_workers=6, mp_context=mp.get_context("spawn")) as executor:
-        pending = [executor.submit(trial, job) for job in jobs]
+        pending = {executor.submit(trial, job): job for job in jobs}
         for future in as_completed(pending):
-            path = future.result()  # Fail visibly; never turn a failed run into zero delay.
+            try:
+                path = future.result()  # Fail visibly; never turn a failed run into zero delay.
+            except Exception as error:
+                if fail_fast:
+                    raise
+                directory = pending[future]["directory"]
+                failures[directory] = f"{type(error).__name__}: {error}"
+                print(f"FAILED {directory}: {failures[directory]}", flush=True)
+                continue
             print(path, flush=True)
+    return failures
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["prepare", "smoke", "tune", "matrix"])
+    parser.add_argument("operation", choices=["prepare", "smoke", "tune", "search", "matrix"],
+                        help="prepare: freeze a study manifest; smoke: one held-out seed; tune: fixed-time greens on training trials; "
+                             "search: count/width-matched Uniform and best-of-20 random placements selected on training trials; "
+                             "matrix: held-out rows, including baseline layouts once searched")
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     os.chdir(ROOT)
@@ -512,13 +689,21 @@ def main():
     if metadata["learned_control_skip_reason"]:
         print(metadata["learned_control_skip_reason"], flush=True)
     jobs = []
+    if args.operation == "search":
+        baseline = baseline_manifest(directory)
+        jobs = search_jobs(directory, baseline)
+        failures = run_jobs(jobs, fail_fast=False)
+        selection = select_baseline(directory, baseline, jobs, failures)
+        print(json.dumps({k: selection[k] for k in ("random_best20", "random_best20_score", "eligible_candidates",
+                                                     "failed_or_incomplete_candidates")}), flush=True)
+        return
     if args.operation == "tune":
         # Training-only selection at 1x and 2x, three seeds. No test feedback.
         variants = [(i, b) for i in (15, 30, 60, 90) for b in (10, 20, 40)]
         for layout in ("original", "learned"):
             for i, b in variants:
-                for scale in (1., 2.):
-                    for seed in (5100, 5101, 5102):
+                for scale in SELECTION_SCALES:
+                    for seed in SELECTION_SEEDS:
                         jobs.append(dict(manifest=str(manifest), layout=layout, arm="tuned_fixed", scale=scale, seed=seed,
                                          split="training", parameters=[i,b], directory=str(directory/"tuning"/f"{layout}_{i}_{b}_{scale}_{seed}")))
     else:
@@ -539,6 +724,7 @@ def main():
                         if arm == "tuned_fixed":
                             job["parameters"] = selected[layout]
                         jobs.append(job)
+        jobs += baseline_rows(directory, scales, seeds)
     run_jobs(jobs)
     if args.operation == "tune":
         selected = {}
@@ -550,8 +736,7 @@ def main():
                 for j in jobs:
                     if j["layout"] == layout and j["parameters"] == list(params):
                         r = json.loads((Path(j["directory"])/"result.json").read_text())
-                        # Equal weight per road-user class. Include outstanding insertion backlog.
-                        values.append(sum((x["wait_sum_1s"]+x["backlog_age_at_end_s"])/max(x["scheduled"],1) for x in r["traffic"].values()))
+                        values.append(selection_score(r))
                 candidates.append((statistics.mean(values), params))
             candidates.sort()
             selected[layout] = list(candidates[0][1])
