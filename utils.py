@@ -66,10 +66,11 @@ def require_exposed_heads(provenance, signal_slots):
 def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, norm_y, save_path,
                 head_decisions, head_updates):
     """
-    Save both policies with the controller's Welford statistics and literal per-head exposure.
+    Save versioned policies with the controller's Welford statistics and literal per-head exposure.
     """
     torch.save(
     {'higher': {
+        'readout_version': higher_policy.readout_version,
         'state_dict': higher_policy.state_dict(),  
         'norm_x': norm_x,
         'norm_y': norm_y
@@ -85,6 +86,17 @@ def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, nor
         'state_normalizer_count': lower_state_normalizer.count.value  
     }}, save_path)
 
+def load_design_policy(higher_policy, higher_checkpoint):
+    """Load compatible design weights without inspecting an unused controller."""
+    if higher_checkpoint.get('readout_version', 1) != higher_policy.readout_version:
+        raise ValueError(
+            'Checkpoint design readout semantics are incompatible with this policy. '
+            'Use fresh training or the historical checkout to decode historical design weights.'
+        )
+    higher_policy.load_state_dict(higher_checkpoint['state_dict'])
+    return higher_checkpoint['norm_x'], higher_checkpoint['norm_y']
+
+
 def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
     """
     Load policy state dict and welford normalizer stats; return design normalizers and controller provenance.
@@ -95,15 +107,14 @@ def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
             'Checkpoint observation packing and Welford statistics are incompatible with '
             'this controller. Use fresh training or the historical checkout.'
         )
-    # In place operations
-    higher_policy.load_state_dict(checkpoint['higher']['state_dict'])
+    norm_x, norm_y = load_design_policy(higher_policy, checkpoint['higher'])
     lower_policy.load_state_dict(checkpoint['lower']['state_dict'])
     lower_state_normalizer.manual_load(
         mean=torch.from_numpy(checkpoint['lower']['state_normalizer_mean']),  
         M2=torch.from_numpy(checkpoint['lower']['state_normalizer_M2']),  
         count=checkpoint['lower']['state_normalizer_count']
     )
-    return checkpoint['higher']['norm_x'], checkpoint['higher']['norm_y'], checkpoint['lower'].get('provenance')
+    return norm_x, norm_y, checkpoint['lower'].get('provenance')
     
 def convert_demand_to_scale_factor(demand, demand_type, input_file):
     """

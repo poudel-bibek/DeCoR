@@ -9,7 +9,6 @@ import torch.nn.functional as F
 from torch_geometric.data import Batch
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.utils import to_dense_batch
-from torch_geometric.nn import global_mean_pool
 from torch.distributions import MixtureSameFamily, MultivariateNormal, Categorical, Bernoulli
 from .ppo_utils import gmm_entropy_monte_carlo, gmm_entropy_legendre
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -225,6 +224,8 @@ class GAT_v2_ActorCritic(nn.Module):
       - Greedy sampling from the GMM at evaluation (Maximum propability point corresponding to mean/ center of each component).
     """
 
+    readout_version = 2  # Feature-wise top-k, not whole-node activation ranking.
+
     def __init__(self, in_channels, action_dim, **kwargs):
         """
         in_channels: Number of input features per node (e.g., x and y coordinates)
@@ -252,7 +253,7 @@ class GAT_v2_ActorCritic(nn.Module):
         self.initial_heads = kwargs.get('initial_heads')
         self.second_heads = kwargs.get('second_heads')
         self.edge_dim = kwargs.get('edge_dim')
-        self.readout_k = kwargs.get('readout_k') # Number of nodes to keep for each graph
+        self.readout_k = kwargs.get('readout_k') # Largest activations retained per feature
         self.dropout_rate = 0.0 # kwargs.get('dropout_rate', 0.2)
     
         if kwargs.get('activation') == "elu":
@@ -307,8 +308,7 @@ class GAT_v2_ActorCritic(nn.Module):
         # actor
         # shared
         actor_shared_layers = []
-        # input_size_actor_shared = self.out_channels * self.second_heads # For global mean pooling
-        input_size_actor_shared = self.out_channels * self.second_heads * self.readout_k # For custom global sort pooling
+        input_size_actor_shared = self.out_channels * self.second_heads * self.readout_k # Feature-wise top-k pooling
         # print(f"Input size actor shared: {input_size_actor_shared}")
         for h in actor_shared_hidden_sizes:
             actor_shared_layers.append(layer_init(nn.Linear(input_size_actor_shared, h)))
@@ -392,107 +392,25 @@ class GAT_v2_ActorCritic(nn.Module):
         self.critic_value = layer_init(nn.Linear(input_size_critic, 1))
     
     def readout_layer(self, x, batch):
-        """
-        Applied at the transition of GAT to MLP layers.
-        Without it, the expected shape is (num_nodes * out_channels * second_heads): num_nodes can be different for each graph.
-        A number of approaches are possible.
-        - global_mean_pool: average across the nodes for each graph in a batch.
-
-        """
-        # print(f"\nReadout layer input: {x}, x.shape: {x.shape}")
-        # pool = global_mean_pool(x, batch)
-        pool = self.custom_global_sort_pool(x, batch, k=self.readout_k) # k = how many nodes to keep?
-        # print(f"\nReadout layer output: {pool}, pool.shape: {pool.shape}")
-        return pool
+        """Return a fixed-width, node-permutation-invariant graph representation."""
+        return self.custom_global_sort_pool(x, batch, k=self.readout_k)
 
     def custom_global_sort_pool(self, x, batch, k):
+        """Keep the k largest values of each feature independently, then flatten.
+
+        Whole-node ranking can move an entire embedding when nearly equal scores
+        cross. Feature-wise order statistics remain continuous at those swaps.
+        Missing ranks are zero-padded; padding never displaces negative features.
+        The output retains shape [number_of_graphs, k * number_of_features].
         """
-        The Global sort pooling from the DGCNN paper (https://muhanzhang.github.io/papers/AAAI_2018_DGCNN.pdf) as implemented in default PyG function,
-        https://pytorch-geometric.readthedocs.io/en/2.0.4/_modules/torch_geometric/nn/glob/sort.html, 
-        first sorts nodes individually based on the value of one specific feature channel (last channel), in descending and then selects top k. 
-        Instead, we use the mean activation (mean attention score) across all features, then select top-k nodes.
-
-        What is returned is a concatenated fixed-size representation.
-
-        x (Tensor): Node feature matrix [num_nodes, num_features] from GAT layers
-        batch (Tensor): Batch vector [num_nodes] containing integers from 0 to batch_size-1
-                        Example: [0,0,0,1,1] means first 3 nodes are from graph 0, last 2 from graph 1
-        k (int): Number of nodes to keep for each graph
-                Usually set to 2 * max_number_of_branches to capture enough structure
-
-        Returns:
-            Tensor: Concatenated top-k node features [batch_size, k * num_features]
-                    If a graph has fewer than k nodes, zero padding is used
-        """
-        # print(f"\n--- Entering custom_global_sort_pool ---")
-        # print(f"Input x shape: {x.shape}")
-        # print(f"Input batch shape: {batch.shape}")
-        # print(f"Input k: {k}")
-
-        # Calculate mean activation for each node
-        scores = torch.mean(x, dim=1)  # [num_nodes]
-        # print(f"Calculated scores shape: {scores.shape}")
-        # print(f"Scores sample: {scores[:10]}") # Optional: print first few scores
-
-        # Convert node features and scores to dense batched format (necessary for batch processing of graphs)
-        batch_x, mask = to_dense_batch(x, batch)  # [batch_size, max_nodes, num_features]
-        batch_scores, _ = to_dense_batch(scores, batch)  # [batch_size, max_nodes]
-        batch_scores = batch_scores.masked_fill(~mask, float('-inf'))
-        # print(f"Dense batch_x shape: {batch_x.shape}")
-        # print(f"Dense mask shape: {mask.shape}")
-        # print(f"Dense batch_scores shape: {batch_scores.shape}")
-
-        # Get batch size and dimensions
-        B, N, D = batch_x.size()  # B: batch_size, N: max_nodes, D: num_features
-        # print(f"Batch size B={B}, Max nodes N={N}, Features D={D}")
-
-        # Sort nodes within each graph based on scores
-        _, perm = batch_scores.sort(dim=-1, descending=True)  # [batch_size, max_nodes]
-        # print(f"Permutation shape after sort: {perm.shape}")
-
-        # Convert to batch-wise indices
-        arange = torch.arange(B, device=x.device) * N # explicitly specify device
-        perm = perm + arange.view(-1, 1)
-        # print(f"Permutation shape after adding arange: {perm.shape}")
-
-        # Flatten batch_x for gathering
-        flat_x = batch_x.view(-1, D)
-        # print(f"Flattened flat_x shape: {flat_x.shape}")
-
-        # Select top-k nodes with padding
-        out = []
-        # print(f"Looping through batch size {B}...")
-        for i in range(B): # Need to process each separately
-            # Get number of actual nodes in this graph
-            n_nodes = mask[i].sum().long()
-            # print(f"  Graph {i}: n_nodes = {n_nodes.item()}")
-
-            actual_k_for_graph = min(k, n_nodes.item()) # How many nodes we will actually take before padding
-            padding_needed = k - actual_k_for_graph
-            # print(f"    Graph {i}: actual_k = {actual_k_for_graph}, padding_needed = {padding_needed}")
-
-            if n_nodes >= k:
-                # If we have enough nodes, select top k
-                graph_x = flat_x[perm[i, :k]]  # [k, num_features]
-                # print(f"    Graph {i}: Selected top {k} nodes. graph_x shape: {graph_x.shape}")
-            else:
-                # If we have fewer than k nodes, pad with zeros
-                graph_x = flat_x[perm[i, :n_nodes]]  # [n_nodes, num_features]
-                padding = graph_x.new_zeros(k - n_nodes, D)  # [k-n_nodes, num_features]
-                # print(f"    Graph {i}: Selected {n_nodes.item()} nodes. graph_x shape before padding: {graph_x.shape}")
-                # print(f"    Graph {i}: Padding shape: {padding.shape}")
-                graph_x = torch.cat([graph_x, padding], dim=0)  # [k, num_features]
-                # print(f"    Graph {i}: graph_x shape after padding: {graph_x.shape}")
-
-            out.append(graph_x)
-
-        # Stack and flatten
-        out = torch.stack(out, dim=0)  # [batch_size, k, num_features]
-        # print(f"Stacked output shape (before flatten): {out.shape}")
-        out = out.view(B, k * D)  # [batch_size, k * num_features]
-        # print(f"Final flattened output shape: {out.shape}")
-        # print(f"--- Exiting custom_global_sort_pool ---")
-        return out
+        dense, mask = to_dense_batch(x, batch, fill_value=float('-inf'))
+        kept = min(k, dense.size(1))
+        pooled = dense.topk(kept, dim=1, sorted=True).values
+        padding = torch.arange(kept, device=x.device)[None, :, None] >= mask.sum(dim=1)[:, None, None]
+        pooled.masked_fill_(padding, 0)
+        if kept < k:
+            pooled = F.pad(pooled, (0, 0, 0, k - kept))
+        return pooled.flatten(start_dim=1)
 
     def actor(self, states_batch, device):
         """
