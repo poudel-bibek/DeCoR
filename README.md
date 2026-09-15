@@ -81,6 +81,10 @@ uv run python main.py
 
 Training writes a timestamped run folder under `runs/<timestamp>/`, including `config.json`, TensorBoard logs, generated SUMO networks, and policies under `saved_policies/`. If `eval_freq > 0`, training also writes intermediate evaluation JSONs under `runs/<timestamp>/results/train_<timestamp>/`.
 
+Controller updates report sampled and exact KL divergence, clipping fraction, maximum absolute log ratio, and pre-update likelihood agreement over the complete collected rollout, respecting each transition's sparse action mask. `lower_approx_kl` no longer describes only the final minibatch. These diagnostics are recorded by both training entrypoints; the standard entrypoint also sends them to TensorBoard or Weights & Biases.
+
+The controller defaults are LR `1e-4`, two PPO epochs, and batch size `1080`, matching three complete ten-worker rounds of 36 decisions. These settings reduce policy change in an identical-batch training diagnostic; they are not evidence of convergence or better traffic performance. Validate new studies with full-rollout controller and design gates, preserve failed attempts, and keep tuning separate from held-out evaluation.
+
 To monitor TensorBoard:
 
 ```bash

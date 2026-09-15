@@ -65,13 +65,13 @@ def get_config():
         "lower_max_grad_norm": 0.75,  # Maximum gradient norm for gradient clipping
         "lower_vf_clip_param": 0.5,  # Value function clipping parameter
         "lower_update_freq": 1024,  # Number of action timesteps between each policy update
-        "lower_lr": 0.001,  # Learning rate
+        "lower_lr": 0.0001,  # Learning rate; validated with full-rollout policy-change diagnostics
         "lower_gamma": 0.99,  # Discount factor
-        "lower_K_epochs": 8,  # Number of epochs to update policy
+        "lower_K_epochs": 2,  # Number of epochs to update policy
         "lower_eps_clip": 0.2,  # Clip parameter for PPO
         "lower_ent_coef": 0.01,  # Entropy coefficient
         "lower_vf_coef": 0.5,  # Value function coefficient
-        "lower_batch_size": 32,  # Batch size
+        "lower_batch_size": 1080,  # Three complete 10-worker rounds of 36 decisions
         "lower_num_processes": 10,  # Number of parallel processes to use (agent has multiple workers)
         "lower_model_size": "medium",  # Model size for CNN: 'small' or 'medium'
         "lower_dropout_rate": 0.25,  # Dropout rate for CNN

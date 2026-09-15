@@ -121,6 +121,66 @@ class PPOValueLossTests(unittest.TestCase):
                     result = agent.update(memory, bootstrap_value=5.0)
                     self.assertLess(result["value_loss"], 1e-9)
 
+    def test_controller_update_reports_whole_rollout_with_sparse_heads(self):
+        torch.set_num_threads(1)
+        torch.manual_seed(73)
+        lower_args = classify_and_return_args(get_config(), "cpu")[3]
+        agent = PPO(**dict(lower_args, lr=1e-4, K_epochs=2, batch_size=3))
+        memory = Memory()
+        for index, slots in enumerate([[0, 2], [7], [2, 5, 9], [0], [1, 6], [4], [0, 9]]):
+            state = torch.randn(10, 123)
+            with torch.no_grad():
+                action, logprob = agent.policy_old.act(state, len(slots), active_slots=slots)
+                value = agent.policy_old.critic(state.unsqueeze(0)).item()
+            padded = torch.full((11,), -1, dtype=action.dtype)
+            padded[0], padded[1 + torch.tensor(slots)] = action[0], action[1:]
+            memory.append(state, padded, len(slots), value, logprob.item(), (-1.) ** index, True)
+        states, actions = torch.stack(memory.states), torch.stack(memory.actions)
+        with torch.no_grad():
+            original_logits = agent.policy_old.actor(states)
+        result = agent.update(memory)
+        with torch.no_grad():
+            logits = agent.policy.actor(states)
+            logprobs, _, _ = agent.policy.evaluate(states, actions, torch.tensor(memory.num_proposals))
+            delta = logprobs - torch.tensor(memory.logprobs)
+            exact = torch.distributions.kl_divergence(
+                torch.distributions.Categorical(logits=original_logits[:, :4]),
+                torch.distributions.Categorical(logits=logits[:, :4]))
+            for index, action in enumerate(actions):
+                active = action[1:] >= 0
+                exact[index] += torch.distributions.kl_divergence(
+                    torch.distributions.Bernoulli(logits=original_logits[index, 4:][active]),
+                    torch.distributions.Bernoulli(logits=logits[index, 4:][active])).sum()
+        torch.testing.assert_close(result["approx_kl"], ((delta.exp() - 1) - delta).mean())
+        torch.testing.assert_close(result["exact_kl"], exact.mean())
+        torch.testing.assert_close(result["clip_fraction"],
+                                   ((delta.exp() - 1).abs() > agent.eps_clip).float().mean())
+        self.assertLess(float(result["preupdate_max_abs_logratio"]), 1e-4)
+
+    def test_controller_kl_excludes_changes_to_inactive_heads(self):
+        torch.set_num_threads(1)
+        torch.manual_seed(74)
+        lower_args = classify_and_return_args(get_config(), "cpu")[3]
+        agent = PPO(**dict(lower_args, lr=0.0, K_epochs=1, batch_size=2))
+        with torch.no_grad():
+            agent.policy.actor_logits.weight.zero_()
+            agent.policy.actor_logits.bias.zero_()
+            agent.policy_old.load_state_dict(agent.policy.state_dict())
+        memory = Memory()
+        for slots in [[0, 2], [0], [2]]:
+            state = torch.randn(10, 123)
+            with torch.no_grad():
+                action, logprob = agent.policy_old.act(state, len(slots), active_slots=slots)
+                value = agent.policy_old.critic(state.unsqueeze(0)).item()
+            padded = torch.full((11,), -1, dtype=action.dtype)
+            padded[0], padded[1 + torch.tensor(slots)] = action[0], action[1:]
+            memory.append(state, padded, len(slots), value, logprob.item(), value, True)
+        with torch.no_grad():
+            agent.policy.actor_logits.bias[5] = 9.0  # Slot 1 is inactive in every transition.
+        result = agent.update(memory)
+        self.assertEqual(float(result["exact_kl"]), 0.0)
+        self.assertEqual(float(result["clip_fraction"]), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

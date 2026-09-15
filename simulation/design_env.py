@@ -110,6 +110,10 @@ class DesignEnv(gym.Env):
             'lower_total_loss': float('inf'),
             'lower_current_lr': 0.0,
             'lower_approx_kl': 0.0,
+            'lower_exact_kl': 0.0,
+            'lower_clip_fraction': 0.0,
+            'lower_max_abs_logratio': 0.0,
+            'lower_preupdate_max_abs_logratio': 0.0,
         }
         self.current_net_file_path = None
         self.current_network_iteration = None
@@ -361,6 +365,10 @@ class DesignEnv(gym.Env):
                 'lower_total_loss': lower_loss['total_loss'],
                 'lower_current_lr': current_lr_lower if self.control_args['lower_anneal_lr'] else self.lower_ppo_args['lr'],
                 'lower_approx_kl': lower_loss['approx_kl'],
+                'lower_exact_kl': lower_loss['exact_kl'],
+                'lower_clip_fraction': lower_loss['clip_fraction'],
+                'lower_max_abs_logratio': lower_loss['max_abs_logratio'],
+                'lower_preupdate_max_abs_logratio': lower_loss['preupdate_max_abs_logratio'],
             }
 
         if torch.cuda.is_available():

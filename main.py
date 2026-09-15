@@ -254,6 +254,10 @@ def train(train_config, is_sweep=False, sweep_config=None):
                 "lower/losses/entropy_loss": info['lower_entropy_loss'],
                 "lower/losses/total_loss": info['lower_total_loss'],
                 "lower/approx_kl": info['lower_approx_kl'],
+                "lower/exact_kl": info['lower_exact_kl'],
+                "lower/clip_fraction": info['lower_clip_fraction'],
+                "lower/max_abs_logratio": info['lower_max_abs_logratio'],
+                "lower/preupdate_max_abs_logratio": info['lower_preupdate_max_abs_logratio'],
                 "evals/lower_ped_avg_wait": eval_ped_avg_wait,
                 "evals/lower_veh_avg_wait": eval_veh_avg_wait,
                 "evals/lower_avg_eval": lower_avg_eval }, 
@@ -279,6 +283,10 @@ def train(train_config, is_sweep=False, sweep_config=None):
             writer.add_scalar('Lower/Losses/Entropy_Loss', info['lower_entropy_loss'], higher_env.global_step)
             writer.add_scalar('Lower/Losses/Total_Loss', info['lower_total_loss'], higher_env.global_step)
             writer.add_scalar('Lower/Approx_KL', info['lower_approx_kl'], higher_env.global_step)
+            writer.add_scalar('Lower/Exact_KL', info['lower_exact_kl'], higher_env.global_step)
+            writer.add_scalar('Lower/Clip_Fraction', info['lower_clip_fraction'], higher_env.global_step)
+            writer.add_scalar('Lower/Max_Abs_Logratio', info['lower_max_abs_logratio'], higher_env.global_step)
+            writer.add_scalar('Lower/Preupdate_Max_Abs_Logratio', info['lower_preupdate_max_abs_logratio'], higher_env.global_step)
             writer.add_scalar('Evaluation/Avg_Veh_Wait', eval_veh_avg_wait, higher_env.global_step)
             writer.add_scalar('Evaluation/Avg_Ped_Wait', eval_ped_avg_wait, higher_env.global_step)
             writer.add_scalar('Evaluation/Avg_Eval', lower_avg_eval, higher_env.global_step)

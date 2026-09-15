@@ -86,7 +86,8 @@ class FakePPO:
         return state.x.mean().reshape(1)
 
     def update(self, memory, **kwargs):
-        return dict.fromkeys(["policy_loss", "value_loss", "entropy_loss", "total_loss", "approx_kl"], 0.0)
+        return dict.fromkeys(["policy_loss", "value_loss", "entropy_loss", "total_loss", "approx_kl",
+                              "exact_kl", "clip_fraction", "max_abs_logratio", "preupdate_max_abs_logratio"], 0.0)
 
     def update_learning_rate(self, *args):
         return 0.0

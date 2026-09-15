@@ -98,6 +98,28 @@ class PPO:
             #print(f"Next value: {next_value}")
         return advantages
 
+    @torch.no_grad()
+    def _control_diagnostics(self, states, actions, old_logprobs, reference_logits):
+        """Measure the complete rollout, including only each transition's active heads."""
+        logits = self.policy.actor(states)
+        active = actions[:, 1:] >= 0
+        intersection = torch.distributions.Categorical(logits=logits[:, :4])
+        crossings = torch.distributions.Bernoulli(logits=logits[:, 4:])
+        logprobs = intersection.log_prob(actions[:, 0]) + (
+            crossings.log_prob(actions[:, 1:].to(dtype=logits.dtype, copy=True).clamp_min_(0)) * active).sum(dim=1)
+        logratios = logprobs - old_logprobs
+        ratios = logratios.exp()
+        exact_kl = torch.distributions.kl_divergence(
+            torch.distributions.Categorical(logits=reference_logits[:, :4]), intersection)
+        exact_kl += (torch.distributions.kl_divergence(
+            torch.distributions.Bernoulli(logits=reference_logits[:, 4:]), crossings) * active).sum(dim=1)
+        return {
+            'approx_kl': ((ratios - 1) - logratios).mean(),
+            'exact_kl': exact_kl.mean(),
+            'clip_fraction': ((ratios - 1).abs() > self.eps_clip).float().mean(),
+            'max_abs_logratio': logratios.abs().max(),
+        }
+
     def update(self, memories, num_proposals = None, bootstrap_value=0.0):
         """
         Update the policy and value networks using the collected experiences.
@@ -160,6 +182,13 @@ class PPO:
             states = torch.stack(memories.states, dim=0)
             dataset = TensorDataset(states, actions, num_proposals, old_logprobs, advantages, returns, old_values)
             dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+            diagnostic_states = states.to(self.device)
+            diagnostic_actions = actions.to(self.device)
+            diagnostic_logprobs = old_logprobs.to(self.device)
+            with torch.no_grad():
+                reference_logits = self.policy_old.actor(diagnostic_states)
+            control_before = self._control_diagnostics(
+                diagnostic_states, diagnostic_actions, diagnostic_logprobs, reference_logits)
         else:  # higher level agent
             states = memories.states  # Already a list of DataBatch objects
             dataset = GraphDataset(states, actions, num_proposals, old_logprobs, advantages, returns, old_values)
@@ -262,7 +291,8 @@ class PPO:
                 # Debug method 1: KL divergence (http://joschu.net/blog/kl-approx.html)
                 # How much the new policy diverges from the old policy.
                 with torch.no_grad():
-                    approx_kl = ((ratios - 1) - logratios).mean()
+                    if self.agent_type == 'higher':
+                        approx_kl = ((ratios - 1) - logratios).mean()
                     # print(f"\nApprox KL: {approx_kl.item()}")
                     # print("--------------------------------\n")
                     # # TODO: Early stopping (at the minibatch level) based on KL divergence? Do it in main.
@@ -292,11 +322,16 @@ class PPO:
         print(f"\n{self.agent_type} policy updated with avg_policy_loss: {avg_policy_loss}\n") 
 
         # Return the average batch loss per epoch
-        return {
+        result = {
             'policy_loss': avg_policy_loss,
             'value_loss': avg_value_loss,
             'entropy_loss': avg_entropy_loss,
             'total_loss': avg_total_loss,
             'approx_kl': approx_kl
         }
+        if self.agent_type == 'lower':
+            result.update(self._control_diagnostics(
+                diagnostic_states, diagnostic_actions, diagnostic_logprobs, reference_logits))
+            result['preupdate_max_abs_logratio'] = control_before['max_abs_logratio']
+        return result
     
