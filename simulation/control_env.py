@@ -52,6 +52,7 @@ class ControlEnv(gym.Env):
 
         # This list has to be gotten from the latest network. Will be populated dynamically during reset
         self.tl_ids = ['cluster_172228464_482708521_9687148201_9687148202_#5more'] # Intersection will always be present.
+        self.active_slots = np.empty(0, dtype=np.int64)
         self.previous_action = None
         self.num_proposals = 0
         # Number of simulation steps that should occur for each action. 
@@ -767,7 +768,7 @@ class ControlEnv(gym.Env):
         * Each action persists for a number of timesteps (transitioning though phases); observation is collected at each timestep.
         * Pressure itself is not a part of the observation (only used for reward calculation).
         * Add full info about one TL at a time (preserve locality).
-        * Spatial locality: TLs are arranged from left to right. Information about incoming, inside, and outgoing is kept next to each other.
+        * Signal locality: each signal's fields occupy its declared slot, even after layout edits.
         * Temporal locality: Observations are stacked verticalled one timestep to the next.
         * Normalize everything with a max normalizer.
 
@@ -778,7 +779,8 @@ class ControlEnv(gym.Env):
         observation = -1 * np.ones(self.per_timestep_state_dim, dtype=np.float32)
         occupancy_map, vehicle_pos_map = self._get_occupancy_map()
         self.corrected_occupancy_map = self._step_operations(occupancy_map, vehicle_pos_map, print_map=print_map)
-        observation[:len(current_phase)] = np.array(current_phase, dtype=np.float32)
+        observation[0] = current_phase[0]
+        observation[1 + self.active_slots] = np.asarray(current_phase[1:], dtype=np.float32)
         length = self.max_proposals + 1  # Reserve every phase slot before occupancy.
         
         # Intersection
@@ -816,8 +818,9 @@ class ControlEnv(gym.Env):
         observation[length:length + len(int_outgoing_ped)] = np.array(int_outgoing_ped, dtype=np.float32)
         length += len(int_outgoing_ped)
 
-        # Midblock (Only add max_proposals TLs)
-        for tl_id in self.tl_ids[1:]:
+        # Midblock fields occupy the same sparse slots as their phases and action heads.
+        for slot, tl_id in zip(self.active_slots, self.tl_ids[1:]):
+            length = self.max_proposals + 1 + 32 + 8 * slot
             # - vehicles
             mb_incoming = [] # 2 directions
             for direction_turn in self.direction_turn_midblock:
@@ -1381,7 +1384,22 @@ class ControlEnv(gym.Env):
         """
         return self.step_count >= self.max_timesteps
 
-    def reset(self, extreme_edge_dict, num_proposals, tl= False, real_world=False, eval_mode=False):
+    def _set_signal_slots(self, new_tl_ids, signal_slots=None):
+        if signal_slots is None:
+            ordered = sorted(new_tl_ids, key=lambda tid: (traci.junction.getPosition(tid)[0], tid))
+            signal_slots = {tid: slot for slot, tid in enumerate(ordered)}
+        if set(signal_slots) != set(new_tl_ids):
+            raise ValueError("Signal slots must cover exactly the current crossing IDs.")
+        slots = list(signal_slots.values())
+        if any(not isinstance(slot, (int, np.integer)) or slot < 0 or slot >= self.max_proposals for slot in slots):
+            raise ValueError("Signal slots must be integer indices within max_proposals.")
+        if len(set(slots)) != len(slots):
+            raise ValueError("Signal slots must be unique.")
+        ordered = sorted(new_tl_ids, key=signal_slots.__getitem__)
+        self.tl_ids = self.tl_ids[:1] + ordered
+        self.active_slots = np.asarray([signal_slots[tid] for tid in ordered], dtype=np.int64)
+
+    def reset(self, extreme_edge_dict, num_proposals, tl=False, real_world=False, eval_mode=False, signal_slots=None):
         """
         """
         # useful when running multiple iterations of the same env (as in eval)
@@ -1456,8 +1474,7 @@ class ControlEnv(gym.Env):
         if num_proposals != len(new_tl_ids):
             raise ValueError(f"Number of proposals ({num_proposals}) does not match the number of traffic light IDs ({len(new_tl_ids)}, {new_tl_ids})")
         
-        new_tl_ids.sort(key=lambda tid: (traci.junction.getPosition(tid)[0], tid))
-        self.tl_ids.extend(new_tl_ids)
+        self._set_signal_slots(new_tl_ids, signal_slots)
         self.junction_pos_cache = {jid: traci.junction.getPosition(jid) for jid in self.tl_ids}
 
         self.num_proposals = num_proposals
@@ -1755,8 +1772,9 @@ class ControlEnv(gym.Env):
                     elif tl_id == '9740484527_c0_mid':
                         self.tl_lane_dict['9740484527_c0_mid']["pedestrian"]["incoming"]["north"]["main"].extend(['edge_9740484528_9740484527_c0_mid', 'edge_9740484524_9740484527_c0_mid'])
                 else: 
-                    top_edge = f"edge_{tl_id.split('mid')[0]}top_{tl_id}"
-                    bottom_edge = f"edge_{tl_id.split('mid')[0]}bottom_{tl_id}"
+                    stem = tl_id.removesuffix('_mid')
+                    top_edge = f"edge_{stem}_top_{tl_id}"
+                    bottom_edge = f"edge_{stem}_bottom_{tl_id}"
                     # print(f"Top edge: {top_edge}, Bottom edge: {bottom_edge}")
                     self.tl_lane_dict[tl_id]["pedestrian"]["incoming"]["north"]["main"].append(top_edge)
                     self.tl_lane_dict[tl_id]["pedestrian"]["incoming"]["north"]["main"].append(bottom_edge)

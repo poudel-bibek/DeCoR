@@ -28,8 +28,45 @@ def save_config(higher_ppo_args, lower_ppo_args, control_args, design_args, run_
     with open(save_path, 'w') as f:
         json.dump(config_to_save, f, indent=4)
 
-def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, norm_y, save_path):  
+SLOT_PROTOCOL = 'explicit_fixed_map'  # Declared per-layout signal-slot maps; no permutation augmentation.
+
+
+class LearnedEvaluationUnavailable(ValueError):
+    """The controller lacks required slot provenance or exposure for a layout."""
+
+
+def signal_slots_from_network(network_path, intersection_id):
+    """Read crossing traffic-light IDs and deterministic spatial slots without running SUMO."""
+    root = ET.parse(network_path).getroot()
+    positions = {node.get('id'): float(node.get('x')) for node in root.findall('junction')}
+    signals = {logic.get('id') for logic in root.findall('tlLogic')} - {intersection_id}
+    ordered = sorted(signals, key=lambda tid: (positions[tid], tid))
+    return {tid: slot for slot, tid in enumerate(ordered)}
+
+
+def require_exposed_heads(provenance, signal_slots):
+    """Every active crossing head must have collected decisions and entered an update batch."""
+    if signal_slots is None:
+        raise LearnedEvaluationUnavailable('Learned evaluation requires an explicit signal-slot map for the layout.')
+    if not provenance or provenance.get('slot_protocol') != SLOT_PROTOCOL:
+        raise LearnedEvaluationUnavailable('Checkpoint lacks explicit slot-protocol provenance; train under the current protocol.')
+    decisions, updates = provenance.get('head_decisions'), provenance.get('head_updates')
+    if decisions is None or updates is None:
+        raise LearnedEvaluationUnavailable('Checkpoint lacks complete per-head exposure provenance.')
+    slots = signal_slots.values()
+    if any(not isinstance(slot, (int, np.integer)) or slot < 0 for slot in slots):
+        raise LearnedEvaluationUnavailable('Signal slots must be nonnegative integer head indices.')
+    missing = sorted({slot for slot in slots
+                      if slot >= len(decisions) or slot >= len(updates)
+                      or decisions[slot] <= 0 or updates[slot] <= 0})
+    if missing:
+        raise LearnedEvaluationUnavailable(f'Action heads {missing} lack collected decisions or controller update batches.')
+
+
+def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, norm_y, save_path,
+                head_decisions, head_updates):
     """
+    Save both policies with the controller's Welford statistics and literal per-head exposure.
     """
     torch.save(
     {'higher': {
@@ -39,6 +76,9 @@ def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, nor
     },
     'lower': {
         'observation_version': lower_policy.observation_version,
+        'provenance': {'slot_protocol': SLOT_PROTOCOL, 'permutation_augmentation': False,
+                       'head_decisions': [int(n) for n in head_decisions],
+                       'head_updates': [int(n) for n in head_updates]},
         'state_dict': lower_policy.state_dict(),  
         'state_normalizer_mean': lower_state_normalizer.mean.numpy(),  
         'state_normalizer_M2': lower_state_normalizer.M2.numpy(),  
@@ -47,7 +87,7 @@ def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, nor
 
 def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
     """
-    Load policy state dict and welford normalizer stats.
+    Load policy state dict and welford normalizer stats; return design normalizers and controller provenance.
     """
     checkpoint = torch.load(load_path)
     if checkpoint['lower'].get('observation_version', 1) != lower_policy.observation_version:
@@ -63,7 +103,7 @@ def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
         M2=torch.from_numpy(checkpoint['lower']['state_normalizer_M2']),  
         count=checkpoint['lower']['state_normalizer_count']
     )
-    return checkpoint['higher']['norm_x'], checkpoint['higher']['norm_y']
+    return checkpoint['higher']['norm_x'], checkpoint['higher']['norm_y'], checkpoint['lower'].get('provenance')
     
 def convert_demand_to_scale_factor(demand, demand_type, input_file):
     """

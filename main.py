@@ -164,28 +164,34 @@ def train(train_config, is_sweep=False, sweep_config=None):
                             higher_env.lower_state_normalizer, 
                             higher_env.normalizer_x, 
                             higher_env.normalizer_y, 
-                            policy_path)
+                            policy_path,
+                            higher_env.control_head_decisions,
+                            higher_env.control_head_updates)
                 
                 # Evaluate the latest policies
                 # At the time when higher agent is saved, lower agent is also exposed to designs from the same distribution.
                 print(f"Evaluating policies: {policy_path} at step {higher_env.global_step}")
-                eval_json = eval(design_args, 
-                                 control_args, 
-                                 higher_ppo_args, 
-                                 lower_ppo_args, 
-                                 eval_args, 
-                                 global_step=higher_env.global_step,
-                                 policy_path=policy_path)
-                
-                # calculate metrics for both policies
-                _, lower_avg_veh_wait, lower_avg_ped_wait, higher_avg_ped_arrival, _, _, _ = get_averages(eval_json)
+                try:
+                    eval_json = eval(design_args,
+                                     control_args,
+                                     higher_ppo_args,
+                                     lower_ppo_args,
+                                     eval_args,
+                                     global_step=higher_env.global_step,
+                                     policy_path=policy_path)
+                except LearnedEvaluationUnavailable as reason:
+                    # An early greedy layout may use action heads that never entered an update; skip rather than score them.
+                    print(f"Learned evaluation unavailable at step {higher_env.global_step}: {reason}")
+                else:
+                    # calculate metrics for both policies
+                    _, lower_avg_veh_wait, lower_avg_ped_wait, higher_avg_ped_arrival, _, _, _ = get_averages(eval_json)
 
-                # Get a single evaluation metric for both agents.
-                eval_veh_avg_wait = np.mean(lower_avg_veh_wait)
-                eval_ped_avg_wait = np.mean(lower_avg_ped_wait)
-                eval_ped_avg_arrival = np.mean(higher_avg_ped_arrival)
-                lower_avg_eval = ((eval_veh_avg_wait + eval_ped_avg_wait) / 2)
-                print(f"Evaluation results: \n\tHigher: {eval_ped_avg_arrival} \n\tLower: {lower_avg_eval}")
+                    # Get a single evaluation metric for both agents.
+                    eval_veh_avg_wait = np.mean(lower_avg_veh_wait)
+                    eval_ped_avg_wait = np.mean(lower_avg_ped_wait)
+                    eval_ped_avg_arrival = np.mean(higher_avg_ped_arrival)
+                    lower_avg_eval = ((eval_veh_avg_wait + eval_ped_avg_wait) / 2)
+                    print(f"Evaluation results: \n\tHigher: {eval_ped_avg_arrival} \n\tLower: {lower_avg_eval}")
 
             # save the policies at every update
             if avg_higher_reward > best_higher_reward: 
@@ -195,7 +201,9 @@ def train(train_config, is_sweep=False, sweep_config=None):
                             higher_env.normalizer_x, 
                             higher_env.normalizer_y, 
                             os.path.join(design_args['save_dir'], 
-                            'saved_policies/best_reward_policy.pth'))
+                            'saved_policies/best_reward_policy.pth'),
+                            higher_env.control_head_decisions,
+                            higher_env.control_head_updates)
                 best_higher_reward = avg_higher_reward
 
             if higher_loss['total_loss'] < best_higher_loss:
@@ -205,7 +213,9 @@ def train(train_config, is_sweep=False, sweep_config=None):
                             higher_env.normalizer_x, 
                             higher_env.normalizer_y, 
                             os.path.join(design_args['save_dir'], 
-                            'saved_policies/best_loss_policy.pth'))
+                            'saved_policies/best_loss_policy.pth'),
+                            higher_env.control_head_decisions,
+                            higher_env.control_head_updates)
                 best_higher_loss = higher_loss['total_loss']
 
             if eval_ped_avg_arrival < best_higher_eval:
@@ -215,7 +225,9 @@ def train(train_config, is_sweep=False, sweep_config=None):
                             higher_env.normalizer_x, 
                             higher_env.normalizer_y, 
                             os.path.join(design_args['save_dir'], 
-                            'saved_policies/best_eval_policy.pth'))
+                            'saved_policies/best_eval_policy.pth'),
+                            higher_env.control_head_decisions,
+                            higher_env.control_head_updates)
                 best_higher_eval = eval_ped_avg_arrival
 
         # logging at every iteration (every time sample is drawn)
@@ -294,11 +306,10 @@ def eval(design_args,
     - Results returned as json  
     """
     
-    if tl:
-        if unsignalized:
-            tl_state = "unsignalized"
-        else:
-            tl_state = "tl"
+    if unsignalized:
+        tl_state = "unsignalized"
+    elif tl:
+        tl_state = "tl"
     else:
         tl_state = "ppo"
     
@@ -308,13 +319,20 @@ def eval(design_args,
     eval_demand_scales = eval_args['in_range_demand_scales'] + eval_args['out_of_range_demand_scales']
     all_results = {}
 
-    eval_ppo_lower = PPO(**lower_ppo_args)
+    eval_ppo_lower = PPO(**lower_ppo_args) if tl_state == 'ppo' else None
     eval_ppo_higher = PPO(**higher_ppo_args)
-    lower_state_normalizer = WelfordNormalizer(eval_args['lower_state_dim'])
+    lower_state_normalizer = WelfordNormalizer(eval_args['lower_state_dim']) if tl_state == 'ppo' else None
 
     higher_env = DesignEnv(design_args, control_args, lower_ppo_args, higher_ppo_args['model_kwargs']['run_dir']) # Pass the correct run_dir
+    controller = None
     if policy_path:
-        norm_x, norm_y = load_policy(eval_ppo_higher.policy, eval_ppo_lower.policy, lower_state_normalizer, policy_path)
+        if tl_state == 'ppo':
+            norm_x, norm_y, controller = load_policy(eval_ppo_higher.policy, eval_ppo_lower.policy, lower_state_normalizer, policy_path)
+        else:
+            # Historical designs remain usable without loading an incompatible, unused controller.
+            checkpoint = torch.load(policy_path)
+            eval_ppo_higher.policy.load_state_dict(checkpoint['higher']['state_dict'])
+            norm_x, norm_y = checkpoint['higher']['norm_x'], checkpoint['higher']['norm_y']
         higher_env.normalizer_x = norm_x # Then replace them
         higher_env.normalizer_y = norm_y
         result_json_path = os.path.join(eval_args['eval_save_dir'], f'{policy_path.split("/")[-1].split(".")[0]}_{tl_state}.json')
@@ -322,17 +340,21 @@ def eval(design_args,
         result_json_path = os.path.join(eval_args['eval_save_dir'], f'realworld_{tl_state}.json')
 
     higher_policy = eval_ppo_higher.policy.to(eval_device)
-    shared_lower_policy = eval_ppo_lower.policy.to(eval_device)
-    shared_lower_policy.share_memory()
-    shared_lower_policy.eval()
+    shared_lower_policy = None
+    if eval_ppo_lower is not None:
+        shared_lower_policy = eval_ppo_lower.policy.to(eval_device)
+        shared_lower_policy.share_memory()
+        shared_lower_policy.eval()
+        lower_state_normalizer.eval()
     higher_policy.eval()
-    lower_state_normalizer.eval()
     higher_state = higher_env.reset() # At reset, we get the original real-world configuration.
 
     if real_world:
         iteration = "0"
         sumo_net_file = f"{higher_env.network_dir}/network_iteration_0.net.xml"
-        num_proposals = 7 # not used.
+        signal_slots = signal_slots_from_network(sumo_net_file, 'cluster_172228464_482708521_9687148201_9687148202_#5more')
+        num_proposals = len(signal_slots)
+        crossing_ids = [tid.removesuffix('_mid') for tid in signal_slots]
     else: 
         iteration = f"eval{global_step}"
         # Which is the input network to the act function
@@ -352,6 +374,13 @@ def eval(design_args,
         # Apply the action to output the latest SUMO network file
         higher_env._apply_action(proposals, iteration) # Pass the actual proposals derived above
         sumo_net_file = higher_env.current_net_file_path #f"{higher_env.network_dir}/network_iteration_{iteration}.net.xml"
+        crossing_ids, signal_slots = higher_env.crossing_ids, higher_env.signal_slots
+    if tl_state == 'ppo':
+        require_exposed_heads(controller, signal_slots)
+    # Record checkpoint/network paths, signal map and controller exposure alongside the results.
+    with open(result_json_path.replace('.json', '_layout.json'), 'w') as f:
+        json.dump({'checkpoint': policy_path, 'network': sumo_net_file, 'crossing_ids': crossing_ids,
+                   'signal_slots': signal_slots, 'controller': controller}, f, indent=4)
 
     # number of times the n_workers have to be repeated to cover all eval demands
     num_times_workers_recycle = len(eval_demand_scales) if len(eval_demand_scales) < n_workers else (len(eval_demand_scales) // n_workers) + 1
@@ -373,6 +402,7 @@ def eval(design_args,
                 'total_action_timesteps_per_episode': eval_args['eval_lower_timesteps'] // control_args['lower_action_duration'], # Each time
                 'worker_demand_scale': demand_scale,
                 'num_proposals': num_proposals,
+                'signal_slots': signal_slots,
                 'lower_policy': shared_lower_policy,
                 'control_args': control_args,
                 'worker_device': eval_device,

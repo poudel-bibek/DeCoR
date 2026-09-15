@@ -1,16 +1,19 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import torch
 from torch_geometric.data import Data
 
 import review_training
 from config import classify_and_return_args, get_config
 from ppo.ppo import PPO
-from ppo.ppo_utils import Memory
+from ppo.ppo_utils import Memory, WelfordNormalizer
+from utils import LearnedEvaluationUnavailable, load_policy, require_exposed_heads
 
 WORKERS = 1
 
@@ -24,10 +27,14 @@ class FakeDesignEnv:
     """Returns a different layout graph after every round; no SUMO."""
 
     def __init__(self, *args, **kwargs):
+        self.max_proposals = 10
         self.lower_ppo = SimpleNamespace(policy=torch.nn.Linear(1, 1))
+        self.lower_ppo.policy.observation_version = 3
         self.lower_reward_normalizer = SimpleNamespace(count=SimpleNamespace(value=0))
         self.lower_update_count = self.action_timesteps = self.global_step = 0
         self.lower_memories = Memory()
+        self.control_head_decisions = np.zeros(self.max_proposals, dtype=np.int64)
+        self.control_head_updates = np.zeros(self.max_proposals, dtype=np.int64)
         self.current_net_file_path = "/tmp/network_iteration_0.net.xml"
         self.current_network_iteration = 0
         self.extreme_edge_dict = {}
@@ -39,12 +46,22 @@ class FakeDesignEnv:
 
     def step(self, proposals, count, iteration, fixed_control=False, update_layout=True):
         self.global_step += WORKERS * 360
+        if update_layout:
+            self._apply_action(proposals[0, :int(count)].numpy(), iteration)
         if not fixed_control:
             self.lower_state_normalizer.count.value += WORKERS * 36
+            active = np.fromiter(self.signal_slots.values(), dtype=np.int64)
+            self.control_head_decisions[active] += WORKERS * 36
+            self.control_head_updates[active] += 1
         return graph(iteration), -float(iteration), -float(iteration), False, {}
 
-    def _apply_action(self, proposals, iteration):
-        pass
+    def _apply_action(self, proposals, iteration, crossing_ids=None, signal_slots=None):
+        # Mirror the default contract: layout-local IDs and deterministic x-rank slots.
+        ids = [f"iter{iteration}_{i}" for i in range(len(proposals))] if crossing_ids is None else list(crossing_ids)
+        if signal_slots is None:
+            order = sorted(range(len(proposals)), key=lambda i: proposals[i][0])
+            signal_slots = {f"{ids[i]}_mid": slot for slot, i in enumerate(order)}
+        self.crossing_ids, self.signal_slots = ids, dict(signal_slots)
 
     def close(self):
         pass
@@ -110,6 +127,39 @@ class OneShotDesignTests(unittest.TestCase):
             for trial in record["rounds"]:
                 self.assertEqual(trial["proposals"], expected)
             self.assertEqual(record["layout"]["proposals"], expected)
+
+    def test_explicit_maps_survive_reuse_and_gate_learned_evaluation(self):
+        settings = dict(smoke=True, development=False, rounds=2, design_horizon_rounds=2, workers=WORKERS)
+        family = {"iter3_1_mid": 7, "iter3_0_mid": 2}  # Non-rank map shared by the layout family.
+        with TemporaryDirectory() as directory, \
+             patch("review_training.DesignEnv", FakeDesignEnv), \
+             patch("review_training.PPO", FakePPO), \
+             patch("review_training.design_diagnostics", return_value={}), \
+             patch("review_training.digest", return_value="0" * 64):
+            joint = review_training.run_arm(Path(directory), "joint", 14100, settings, {})
+            self.assertEqual(joint["layout"]["crossing_ids"], ["iter3_0", "iter3_1"])
+            self.assertEqual(joint["layout"]["signal_slots"], {"iter3_0_mid": 0, "iter3_1_mid": 1})
+            joint["layout"]["signal_slots"] = family
+            (Path(directory) / "14100" / "joint" / "training.json").write_text(json.dumps(joint))
+            records = {arm: review_training.run_arm(Path(directory), arm, 14100, settings, {})
+                       for arm in ("fixed_layout", "random_layout")}
+            loaded_provenance = {}
+            for arm, record in records.items():
+                with self.subTest(arm=arm):
+                    # Reuse must export the joint identities and the declared map, never a rank-derived one.
+                    self.assertEqual(record["layout"]["crossing_ids"], joint["layout"]["crossing_ids"])
+                    self.assertEqual(record["layout"]["signal_slots"], family)
+                    _, _, provenance = load_policy(FakePPO().policy, FakeDesignEnv().lower_ppo.policy,
+                                                   WelfordNormalizer((10, 123)), record["checkpoint"])
+                    loaded_provenance[arm] = provenance
+        # Fixed-layout control trained on slots 2 and 7; random-layout control only on rank slots 0 and 1.
+        require_exposed_heads(loaded_provenance["fixed_layout"], family)
+        with self.assertRaisesRegex(LearnedEvaluationUnavailable, r"heads \[2, 7\]"):
+            require_exposed_heads(loaded_provenance["random_layout"], family)
+        with self.assertRaisesRegex(LearnedEvaluationUnavailable, "explicit signal-slot map"):
+            require_exposed_heads(loaded_provenance["fixed_layout"], None)
+        with self.assertRaisesRegex(LearnedEvaluationUnavailable, "provenance"):
+            require_exposed_heads({"head_updates": loaded_provenance["fixed_layout"]["head_updates"]}, family)
 
 
 if __name__ == "__main__":

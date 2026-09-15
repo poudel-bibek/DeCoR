@@ -32,6 +32,7 @@ from ppo.models import MLP_ActorCritic
 from ppo.ppo_utils import WelfordNormalizer
 from simulation.control_env import ControlEnv
 from simulation.design_env import DesignEnv
+from utils import require_exposed_heads, signal_slots_from_network
 
 ROOT = Path(__file__).resolve().parent
 RUN = ROOT / "runs/readout_32/May09_11-34-05"
@@ -139,9 +140,13 @@ def prepare(destination):
     env.normalizer_x = checkpoint["higher"]["norm_x"]
     env.normalizer_y = checkpoint["higher"]["norm_y"]
     state = env.reset()
-    original = {"network": str(Path(env.network_dir) / "network_iteration_0.net.xml"),
-                "iteration": "0", "num_proposals": 7, "real_world": True,
-                "extreme_edges": copy.deepcopy(env.extreme_edge_dict)}
+    original_network = Path(env.network_dir) / "network_iteration_0.net.xml"
+    original_slots = signal_slots_from_network(original_network, INTERSECTION)
+    original = {"network": str(original_network),
+                "iteration": "0", "num_proposals": len(original_slots), "real_world": True,
+                "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
+                "crossing_ids": [tid.removesuffix("_mid") for tid in original_slots],
+                "signal_slots": original_slots}
     policy = PPO(**higher).policy
     policy.load_state_dict(checkpoint["higher"]["state_dict"])
     policy.eval()
@@ -159,7 +164,8 @@ def prepare(destination):
     env._apply_action(proposals, "review")
     learned = {"network": str(Path(env.current_net_file_path).resolve()),
                "iteration": "review", "num_proposals": len(proposals), "real_world": False,
-               "extreme_edges": copy.deepcopy(env.extreme_edge_dict)}
+               "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
+               "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots)}
     for layout in (original, learned):
         layout["network"] = str(Path(layout["network"]).resolve())
         layout["sha256"] = digest(layout["network"])
@@ -300,6 +306,15 @@ def trial(job):
     layout = m["layouts"][job["layout"]]
     if "sha256" in layout and digest(layout["network"]) != layout["sha256"]:
         raise ValueError("Network changed since the final layout was recorded. Use a fresh study directory.")
+    family = layout.get("family_slots")
+    if family is not None:
+        # Paired variants of one base layout keep every surviving signal in its base slot.
+        slots = layout.get("signal_slots") or {}
+        moved = sorted(tid for tid in slots.keys() & family.keys() if slots[tid] != family[tid])
+        if moved:
+            raise ValueError(f"Signals {moved} leave their family base slots; shared identities must keep their slots.")
+        if any(tid not in family and slot in family.values() for tid, slot in slots.items()):
+            raise ValueError("New signals cannot reuse reserved family base slots.")
     warmup_control = m.get("warmup_control", "fixed")
     if warmup_control not in ("fixed", "random"):
         raise ValueError("warmup_control must be 'fixed' or 'random'.")
@@ -337,6 +352,7 @@ def trial(job):
         state_stats = checkpoint["lower"]
         if state_stats.get("observation_version", 1) != MLP_ActorCritic.observation_version:
             raise ValueError("Legacy control weights and Welford statistics require fresh training for this observation protocol.")
+        require_exposed_heads(state_stats.get("provenance"), layout.get("signal_slots"))
         policy = PPO(**lower).policy
         policy.load_state_dict(state_stats["state_dict"]); policy.eval()
         normalizer = WelfordNormalizer(state_stats["state_normalizer_mean"].shape)
@@ -363,7 +379,8 @@ def trial(job):
     try:
         with (folder / "stdout.log").open("w") as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             state, _ = env.reset(layout["extreme_edges"], layout["num_proposals"], tl=warmup_control == "fixed",
-                                 real_world=layout["real_world"], eval_mode=job["split"] == "evaluation")
+                                 real_world=layout["real_world"], eval_mode=job["split"] == "evaluation",
+                                 signal_slots=layout.get("signal_slots"))
             warmup = traci.simulation.getTime()
             if journey_protocol is not None:
                 assert warmup == journey_protocol["warmup_s"]
@@ -377,7 +394,8 @@ def trial(job):
             for _ in range(45):
                 if job["arm"] == "learned":
                     with torch.no_grad():
-                        action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"], training=False)
+                        action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"],
+                                               training=False, active_slots=env.active_slots)
                     action = action.cpu()
                 state, _, done, _, info = env.eval_step(action, tl=job["arm"] != "learned")
                 for kind in measured_wait:
@@ -417,7 +435,8 @@ def trial(job):
                        any(set(cohort[kind]) - tracker.completed[kind] for kind in cohort)):
                     if job["arm"] == "learned":
                         with torch.no_grad():
-                            action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"], training=False)
+                            action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"],
+                                                   training=False, active_slots=env.active_slots)
                         action = action.cpu()
                     state, _, _, _, _ = env.eval_step(action, tl=job["arm"] != "learned")
                 simulation_end = traci.simulation.getTime()
