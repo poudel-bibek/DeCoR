@@ -44,7 +44,7 @@ def get_config():
         "higher_hidden_channels": 64, # Number of hidden channels in between two GATv2 layers
         'higher_out_channels': 64, # Number of channels at the ouput of last GATv2 layer
         "higher_activation": "tanh",  # Policy activation function
-        "higher_readout_k": 32, # Number of nodes to keep for each graph
+        "higher_readout_k": 32, # Largest graph activations retained per feature
 
         # Design specific parameters
         "min_thickness": 2.0,  # Minimum thickness for crosswalks

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from config import classify_and_return_args, get_config
-from ppo.models import MLP_ActorCritic
+from ppo.models import GAT_v2_ActorCritic, MLP_ActorCritic
 from ppo.ppo import PPO
 from ppo.ppo_utils import Memory
 from simulation.design_env import DesignEnv
@@ -87,7 +87,7 @@ class SparseControlPolicyTests(unittest.TestCase):
 
 
 class EvaluationWorkerTests(unittest.TestCase):
-    def test_main_preserves_historical_baselines_but_rejects_legacy_control(self):
+    def test_main_accepts_current_design_with_unused_legacy_control_only(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory
         import main
@@ -95,6 +95,7 @@ class EvaluationWorkerTests(unittest.TestCase):
         def agent(**kwargs):
             policy = torch.nn.Linear(1, 1)
             policy.observation_version = MLP_ActorCritic.observation_version
+            policy.readout_version = GAT_v2_ActorCritic.readout_version
             return SimpleNamespace(policy=policy)
 
         checkpoint = {
@@ -111,18 +112,22 @@ class EvaluationWorkerTests(unittest.TestCase):
                 "lower_state_dim": (10, 123), "eval_save_dir": temporary, "eval_lower_timesteps": 450,
             }
             env = Mock(network_dir=temporary, extreme_edge_dict={})
-            for tl, unsignalized in [(True, False), (True, True), (False, True), (False, False)]:
-                with self.subTest(tl=tl, unsignalized=unsignalized), \
+            cases = [(True, False, 2), (True, True, 2), (False, True, 2), (False, False, 2),
+                     (True, False, 1), (False, True, 1)]
+            for tl, unsignalized, readout_version in cases:
+                checkpoint["higher"]["readout_version"] = readout_version
+                with self.subTest(tl=tl, unsignalized=unsignalized, readout_version=readout_version), \
                      patch.object(main, "PPO", side_effect=agent), \
                      patch.object(main, "DesignEnv", return_value=env), \
                      patch.object(main.torch, "load", return_value=checkpoint), \
                      patch.object(main.mp, "Queue"), \
                      patch.object(main.mp, "Process", side_effect=RuntimeError("stop before worker")):
-                    error, message = (RuntimeError, "stop before worker") if tl or unsignalized else (ValueError, "incompatible")
+                    compatible_baseline = (tl or unsignalized) and readout_version == 2
+                    error, message = (RuntimeError, "stop before worker") if compatible_baseline else (ValueError, "incompatible")
                     with self.assertRaisesRegex(error, message):
                         main.eval({}, {"lower_action_duration": 10},
                                   {"model_kwargs": {"run_dir": temporary}}, {}, evaluation,
-                                  policy_path=str(Path(temporary) / "historical.pth"),
+                                  policy_path=str(Path(temporary) / "legacy_controller.pth"),
                                   tl=tl, unsignalized=unsignalized, real_world=True)
 
     def setUp(self):

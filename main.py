@@ -329,10 +329,9 @@ def eval(design_args,
         if tl_state == 'ppo':
             norm_x, norm_y, controller = load_policy(eval_ppo_higher.policy, eval_ppo_lower.policy, lower_state_normalizer, policy_path)
         else:
-            # Historical designs remain usable without loading an incompatible, unused controller.
+            # A compatible design remains usable without loading an incompatible, unused controller.
             checkpoint = torch.load(policy_path)
-            eval_ppo_higher.policy.load_state_dict(checkpoint['higher']['state_dict'])
-            norm_x, norm_y = checkpoint['higher']['norm_x'], checkpoint['higher']['norm_y']
+            norm_x, norm_y = load_design_policy(eval_ppo_higher.policy, checkpoint['higher'])
         higher_env.normalizer_x = norm_x # Then replace them
         higher_env.normalizer_y = norm_y
         result_json_path = os.path.join(eval_args['eval_save_dir'], f'{policy_path.split("/")[-1].split(".")[0]}_{tl_state}.json')

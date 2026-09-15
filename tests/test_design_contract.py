@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import Batch, Data
 
 import review_training
 from config import classify_and_return_args, get_config
+from ppo.models import GAT_v2_ActorCritic, MLP_ActorCritic
 from ppo.ppo import PPO
 from ppo.ppo_utils import Memory, WelfordNormalizer
-from utils import LearnedEvaluationUnavailable, load_policy, require_exposed_heads
+from utils import LearnedEvaluationUnavailable, load_design_policy, load_policy, require_exposed_heads, save_policy
 
 WORKERS = 1
 
@@ -72,6 +73,7 @@ class FakePPO:
     def __init__(self, **kwargs):
         self.eps_clip = 0.2
         self.policy = torch.nn.Linear(1, 1)
+        self.policy.readout_version = GAT_v2_ActorCritic.readout_version
         self.policy_old = SimpleNamespace(eval=lambda: None, act=self.act, critic=self.critic)
 
     def act(self, state, iteration, clamp_min, clamp_max, device, training=True, visualize=False):
@@ -88,6 +90,77 @@ class FakePPO:
 
     def update_learning_rate(self, *args):
         return 0.0
+
+
+class CheckpointReadoutTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = self.enterContext(TemporaryDirectory())
+        self.enterContext(torch.random.fork_rng(devices=[]))
+        torch.manual_seed(173)
+        self.higher = GAT_v2_ActorCritic(
+            2, 10, run_dir=self.directory, num_mixtures=2, hidden_channels=4,
+            out_channels=4, initial_heads=1, second_heads=1, edge_dim=2,
+            readout_k=3, activation="tanh", model_size="small").eval()
+        self.lower = MLP_ActorCritic(
+            1, 14, action_duration=10, per_timestep_state_dim=123,
+            activation="tanh", model_size="small").eval()
+        self.normalizer = WelfordNormalizer((10, 123))
+        self.normalizer.manual_load(torch.full((10, 123), 0.4), torch.full((10, 123), 2.0), 3)
+        self.normalizer.eval()
+        self.states = Batch.from_data_list([graph(0.2), graph(0.7)])
+        self.observations = torch.linspace(-1, 1, 2 * 10 * 123).reshape(2, 10, 123)
+        self.actions = torch.full((2, 11), -1)
+        self.actions[:, [0, 2, 8]] = torch.tensor([[1, 0, 1], [2, 1, 0]])
+        self.counts = torch.tensor([2, 2])
+        self.norm_x, self.norm_y = {"min": 10.0, "max": 100.0}, {"min": -5.0, "max": 5.0}
+        decisions, updates = np.zeros(10, dtype=int), np.zeros(10, dtype=int)
+        decisions[[1, 7]], updates[[1, 7]] = 36, 1
+        self.path = Path(self.directory) / "policy.pth"
+        save_policy(self.higher, self.lower, self.normalizer, self.norm_x, self.norm_y,
+                    self.path, decisions, updates)
+
+    def predictions(self):
+        with torch.no_grad():
+            points = torch.tensor([[0.25, 0.4], [0.75, 0.6]])
+            densities = torch.stack([gmm.log_prob(points) for gmm in
+                                     self.higher.get_gmm_distribution(self.states, "cpu")])
+            return (densities, self.higher.critic(self.states, "cpu"),
+                    self.lower.evaluate(self.normalizer.normalize(self.observations), self.actions, self.counts))
+
+    def test_checkpoint_roundtrip_preserves_design_and_sparse_controller_predictions(self):
+        expected = self.predictions()
+        checkpoint = torch.load(self.path)
+        self.assertEqual(checkpoint["higher"]["readout_version"], 2)
+        self.assertEqual(checkpoint["lower"]["observation_version"], 3)
+        with torch.no_grad():
+            for policy in (self.higher, self.lower):
+                for parameter in policy.parameters():
+                    parameter.add_(0.25)
+        self.normalizer.manual_load(torch.zeros((10, 123)), torch.ones((10, 123)), 1)
+        load_policy(self.higher, self.lower, self.normalizer, self.path)
+        torch.testing.assert_close(self.predictions(), expected, rtol=0, atol=0)
+
+    def test_incompatible_design_headers_reject_before_policy_or_normalizer_mutation(self):
+        expected = self.predictions()
+        checkpoint = torch.load(self.path)
+        for section in ("higher", "lower"):
+            for parameter in checkpoint[section]["state_dict"].values():
+                parameter.add_(0.5)
+        checkpoint["lower"]["state_normalizer_mean"].fill(9)
+        for version in (None, 1, 3):
+            if version is None:
+                checkpoint["higher"].pop("readout_version", None)
+            else:
+                checkpoint["higher"]["readout_version"] = version
+            torch.save(checkpoint, self.path)
+            with self.subTest(version=version, loader="design"):
+                with self.assertRaises(ValueError):
+                    load_design_policy(self.higher, checkpoint["higher"])
+                torch.testing.assert_close(self.predictions(), expected, rtol=0, atol=0)
+            with self.subTest(version=version, loader="combined"):
+                with self.assertRaises(ValueError):
+                    load_policy(self.higher, self.lower, self.normalizer, self.path)
+                torch.testing.assert_close(self.predictions(), expected, rtol=0, atol=0)
 
 
 class OneShotDesignTests(unittest.TestCase):
