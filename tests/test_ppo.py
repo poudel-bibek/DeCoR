@@ -121,6 +121,20 @@ class PPOValueLossTests(unittest.TestCase):
                     result = agent.update(memory, bootstrap_value=5.0)
                     self.assertLess(result["value_loss"], 1e-9)
 
+    def test_cold_start_outputs_are_continuous_at_zero_observations(self):
+        torch.set_num_threads(1)
+        with torch.random.fork_rng():
+            torch.manual_seed(14200)
+            agent = PPO(**classify_and_return_args(get_config(), "cpu")[3])
+        perturbation = torch.linspace(-1e-6, 1e-6, 1230).reshape(10, 123)
+        states = torch.stack([torch.zeros_like(perturbation), perturbation, -perturbation])
+        actions = torch.full((3, 11), -1, dtype=torch.long)
+        actions[:, [0, 1, 3, 8]] = 0
+        with torch.no_grad():
+            logprobs, values, _ = agent.policy.evaluate(states, actions, torch.full((3,), 3))
+        torch.testing.assert_close(logprobs[1:], logprobs[0].expand(2), atol=1e-3, rtol=0)
+        torch.testing.assert_close(values[1:], values[:1].expand_as(values[1:]), atol=1e-2, rtol=0)
+
     def test_controller_update_reports_whole_rollout_with_sparse_heads(self):
         torch.set_num_threads(1)
         torch.manual_seed(73)
