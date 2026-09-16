@@ -821,8 +821,9 @@ class Telemetry(traci.StepListener):
                 stopped = [v for v in vehicles if traci.vehicle.getSpeed(v) < .1]
                 rear = min((traci.vehicle.getLanePosition(v) - traci.vehicle.getLength(v) for v in stopped),
                            default=length)
+                previous = self.previous_lane_vehicles.get(lane)
                 queues[lane] = {"stopped": len(stopped), "queue_extent_m": max(0., length - rear),
-                                "entered": len(vehicles - self.previous_lane_vehicles.get(lane, vehicles))}
+                                "entered": len(vehicles) if previous is None else len(vehicles - previous)}
                 self.previous_lane_vehicles[lane] = vehicles
             self.mechanism_file.write(json.dumps({
                 "type": "step", "time_s": now,

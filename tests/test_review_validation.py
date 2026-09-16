@@ -837,6 +837,32 @@ class FeedbackComparisonTest(unittest.TestCase):
         self.assertIsNone(scores["access"])
         self.assertIsNone(scores["access_wait"])
 
+    def test_lane_entries_include_first_sample_without_recounting_stayers(self):
+        env = Mock(tl_ids=["intersection"], mb_ped_incoming_edges_all=[])
+        tracker = review.Telemetry(env, "fixed")
+        path = self.folder / "mechanism.jsonl"
+        with path.open("w") as trace, patch.object(review, "traci") as traci:
+            tracker.mechanism_file = trace
+            for name in ("getDepartedIDList", "getArrivedIDList", "getDepartedPersonIDList",
+                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollidingVehiclesIDList"):
+                getattr(traci.simulation, name).return_value = []
+            traci.person.getIDList.return_value = []
+            traci.vehicle.getWaitingTime.return_value = 0
+            traci.vehicle.getSpeed.return_value = 1
+            traci.trafficlight.getControlledLanes.return_value = ["lane"]
+            traci.trafficlight.getPhase.return_value = 0
+            traci.trafficlight.getRedYellowGreenState.return_value = "G"
+            traci.junction.getPosition.return_value = (0, 0)
+            traci.lane.getLength.return_value = 100
+            traci.lane.getShape.return_value = [(0, 0), (100, 0)]
+            for time, vehicles in enumerate([["a", "b"], ["b", "c"], [], ["a"]], 1):
+                traci.simulation.getTime.return_value = time
+                traci.vehicle.getIDList.return_value = vehicles
+                traci.lane.getLastStepVehicleIDs.return_value = vehicles
+                tracker.step()
+        steps = [json.loads(line) for line in path.read_text().splitlines()][1:]
+        self.assertEqual([step["lanes"]["lane"]["entered"] for step in steps], [2, 1, 0, 1])
+
     def test_full_cohort_approach_wait_does_not_pollute_measurement_wait(self):
         env = Mock(tl_ids=["intersection"], mb_ped_incoming_edges_all=["approach"])
         tracker = review.Telemetry(env, "fixed")
