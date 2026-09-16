@@ -47,7 +47,6 @@ The demand XML files encode origin-destination demand, not fully routed paths; r
 | --- | --- | --- |
 | Pretrained policy | `runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth` | Checkpoint used by the default `eval_model_path`. |
 | Paper evaluation JSONs | `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` | Includes DeCoR control, fixed-time, unsignalized, and real-world unsignalized evaluation outputs. |
-| Design baseline JSON | `runs/baselines_experiment/baseline_results.json` | Stored uniform/random design baseline results used by plotting utilities. |
 
 ---
 ### ⚙️ Setup
@@ -81,11 +80,15 @@ uv run python main.py
 
 Training writes a timestamped run folder under `runs/<timestamp>/`, including `config.json`, TensorBoard logs, generated SUMO networks, and policies under `saved_policies/`. If `eval_freq > 0`, training also writes intermediate evaluation JSONs under `runs/<timestamp>/results/train_<timestamp>/`.
 
+The design policy proposes a complete layout from the original-crossing reset graph on every round and uses that same context for final layout extraction. New configurations use `higher_gamma = 0` for immediate normalized design rewards; the controller retains its temporal PPO objective. Historical runs and their recorded configurations are unchanged.
+
 Controller updates report sampled and exact KL divergence, clipping fraction, maximum absolute log ratio, and pre-update likelihood agreement over the complete collected rollout, respecting each transition's sparse action mask. `lower_approx_kl` no longer describes only the final minibatch. These diagnostics are recorded by both training entrypoints; the standard entrypoint also sends them to TensorBoard or Weights & Biases.
 
 New controllers retain the hidden layers' random biases and initialize the actor output weights with gain `0.01`. This avoids amplified cold-start responses to zero-normalized observations through stacked LayerNorm and starts action probabilities near uniform. Only fresh initialization changes: the architecture, observation version 3, and predictions from loaded saved weights remain unchanged. Record new initial policy hashes when restarting a study.
 
 The controller defaults are LR `1e-4`, two PPO epochs, and batch size `1080`, matching three complete ten-worker rounds of 36 decisions. These settings reduce policy change in an identical-batch training diagnostic; they are not evidence of convergence or better traffic performance. Validate new studies with full-rollout controller and design gates, preserve failed attempts, and keep tuning separate from held-out evaluation.
+
+Rendered run diagnostics go under `runs/<timestamp>/generated/graph_iterations/` and `generated/gmm_iterations/`. Their serialized graph/GMM source data remain in the run's original `graph_iterations/` and `gmm_iterations/` directories.
 
 To monitor TensorBoard:
 
@@ -150,10 +153,14 @@ This path uses common actuated control for the original, recorded final, Uniform
 ├── uv.lock                  # Locked dependency resolution
 ├── images/                  # Tracked README and corridor visual assets
 ├── plots/
-│   ├── training_plots.py    # Training-era control/design plots and videos
-│   ├── result_plots.py      # Paper result figures and combined plots
-│   └── pedestrian_flow_plot.py
-│                            # Standalone pedestrian flow allocation figure
+│   ├── training_plots.py             # Training-era control/design result plots
+│   ├── result_plots.py               # Graph, distribution, and flow visualizations
+│   ├── design_distribution.py        # Design density and reward ablation
+│   ├── corridor_demand.py            # Corridor image and observed demand
+│   ├── layout_control_comparison.py  # Historical layout/control evaluation
+│   ├── pedestrian_flow_allocation.py # Illustrative pedestrian flow allocation
+│   ├── training_transfer_comparison.py # Historical rewards and layout transfer
+│   └── generated/                   # Ignored standalone plot outputs
 ├── ppo/
 │   ├── models.py            # Lower MLP policy and higher GAT/GMM policy
 │   ├── ppo.py               # PPO update implementation
@@ -170,6 +177,20 @@ This path uses common actuated control for the original, recorded final, Uniform
 └── runs/
     └── readout_32/...       # Included checkpoint and paper result artifacts
 ```
+
+### Generating plots
+
+Run a descriptive generator without an output argument, for example:
+
+```bash
+uv run python plots/design_distribution.py
+```
+
+The five descriptive generators write matching PNG filenames under the repository's `plots/generated/` directory, independent of the working directory. An optional output path remains available for an explicit export. Legacy plot helpers also write to `plots/generated/`; animation frames default to `plots/generated/gmm_animation_frames/`. Animation generation refuses a nonempty directory unless `--keep-frames` is explicit, preserving unrelated files.
+
+Generators consume retained experiment data, not new simulation results. Some inputs are local research assets rather than files in a clean checkout, including the annotated corridor image from the paper checkout, ablation records and the illustrative flow cache. Existing paper figure copies are not overwritten by default.
+
+`plots/generated/` and per-run `generated/` directories are ignored by Git.
 
 ---
 ### 🔧 Important Configuration Values

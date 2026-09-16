@@ -60,3 +60,7 @@ run_rl_control_baseline.py
 *.png
 !images/system_overview.png
 !images/demand_v2.png
+
+# Generated visuals (including per-run directories)
+generated/
+/plots/generated/
