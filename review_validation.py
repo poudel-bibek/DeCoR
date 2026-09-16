@@ -707,7 +707,9 @@ def summarize_feedback(directory, failures):
             complete = all(v is not None for v in values)
             mean = statistics.mean(values) if complete else None
             interval = None
-            if complete and len(values) >= 2:
+            if complete and choices["access"] == choices[rule]:
+                interval = [0.0, 0.0]
+            elif complete and len(values) >= 2:
                 half = float(student_t.ppf(.975, len(values) - 1)) * statistics.stdev(values) / len(values) ** .5
                 interval = [mean - half, mean + half]
             verdict = "incomplete_service" if not complete else "undetermined"

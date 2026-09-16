@@ -799,6 +799,36 @@ class FeedbackComparisonTest(unittest.TestCase):
             self.assertEqual(comparison["conditional_t95_interval_s"], [0, 0])
             self.assertEqual(comparison["verdict"], "practically_negligible")
 
+    def test_single_seed_distinguishes_exact_identity_from_unestimated_variance(self):
+        root = self.folder
+        metadata = json.loads(self.manifest.read_text())
+        metadata["feedback_protocol"]["evaluation_seeds"] = [11]
+        metadata["layouts"] = {"placement_000": {}, "placement_001": {}}
+        for identical in (False, True):
+            with self.subTest(identical=identical):
+                self.folder = root / str(identical)
+                self.manifest = self.folder / "manifest.json"
+                review.save(self.manifest, metadata)
+                for job in review.feedback_jobs(self.folder, "selection"):
+                    first = job["layout"] == "placement_000"
+                    self.record(job, 1 if first else 5, 20 if first else 30 if identical else 0, 0, 200)
+                review.select_feedback(self.folder, {})
+                jobs = review.feedback_jobs(self.folder, "evaluation")
+                for job in jobs:
+                    self.record(job, 1, 1, 0, 200)
+                report = review.summarize_feedback(self.folder, {})
+                for comparison in report["comparisons"]:
+                    self.assertEqual(comparison["identical_selection"], identical)
+                    self.assertEqual(comparison["conditional_t95_interval_s"], [0, 0] if identical else None)
+                    self.assertEqual(comparison["verdict"], "practically_negligible" if identical else "undetermined")
+                # Identity does not excuse an ineligible service outcome.
+                self.record(jobs[0], 1, 1, 0, 200, incomplete=True)
+                report = review.summarize_feedback(self.folder, {})
+                for comparison in report["comparisons"]:
+                    if comparison["arm"] == jobs[0]["arm"]:
+                        self.assertIsNone(comparison["conditional_t95_interval_s"])
+                        self.assertEqual(comparison["verdict"], "incomplete_service")
+
     def test_no_approach_observations_do_not_become_a_perfect_access_score(self):
         job = review.feedback_jobs(self.folder, "selection")[0]
         self.record(job, None, None, 10, 100)
