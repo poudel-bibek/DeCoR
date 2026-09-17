@@ -3,6 +3,9 @@
 The animation follows the visual language of ``graphs_gmm_v2.png``:
 an isometric GMM density surface on the left and a top-down contour map
 on the right, with component means merging into final maxima.
+
+Frames default to plots/generated/gmm_animation_frames in the code repository.
+Use a fresh --frames-dir or explicitly --keep-frames to reuse existing output.
 """
 
 from __future__ import annotations
@@ -10,7 +13,6 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
-import shutil
 import warnings
 from pathlib import Path
 
@@ -309,16 +311,17 @@ def draw_frame(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gmm-path", type=Path, default=DEFAULT_GMM_PATH)
-    parser.add_argument("--frames-dir", type=Path, default=Path("/tmp/decor_gmm_animation_frames"))
+    parser.add_argument("--frames-dir", type=Path,
+                        default=PROJECT_ROOT / "plots/generated/gmm_animation_frames")
     parser.add_argument("--frames", type=int, default=110)
     parser.add_argument("--surface-res", type=int, default=120)
-    parser.add_argument("--keep-frames", action="store_true")
+    parser.add_argument("--keep-frames", action="store_true",
+                        help="Reuse the directory, retaining unrelated files and overwriting matching frame PNGs.")
     args = parser.parse_args()
 
     args.frames_dir.mkdir(parents=True, exist_ok=True)
-    if not args.keep_frames:
-        shutil.rmtree(args.frames_dir)
-        args.frames_dir.mkdir(parents=True, exist_ok=True)
+    if not args.keep_frames and any(args.frames_dir.iterdir()):
+        parser.error("Frames directory is not empty; choose a fresh --frames-dir or use --keep-frames.")
 
     means = modified_means_from_gmm(args.gmm_path)
     maxima, clusters = maxima_from_means(means)

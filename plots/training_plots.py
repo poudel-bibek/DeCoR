@@ -31,8 +31,10 @@ from matplotlib.colors import LinearSegmentedColormap
 # Path helpers — resolve relative to project root regardless of CWD
 # ---------------------------------------------------------------------------
 def _out(*parts):
-    """Join parts relative to the plots/ directory (for output files)."""
-    return os.path.join(_SCRIPT_DIR, *parts)
+    """Join output parts under the repository's plots/generated/ directory."""
+    output_dir = os.path.join(_PROJECT_ROOT, "plots", "generated")
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, *parts)
 
 def count_consecutive_ones_filtered(actions):
     """
