@@ -18,26 +18,37 @@ def pairwise(iterable):
     next(b, None)
     return zip(a, b)
 
-# Instead of setting the y-coordinate of the middle node as mid_point in networkx_graph, interpolation is used.
+def edge_polyline(edge, start, end):
+    """Include node endpoints omitted from a plain-exported edge's custom shape."""
+    shape = [tuple(map(float, point.split(','))) for point in edge.get('shape', '').split()]
+    if not shape:
+        return [start, end]
+    if shape[0] != start:
+        shape.insert(0, start)
+    if shape[-1] != end:
+        shape.append(end)
+    return shape
+
+
+def split_polyline_at_x(shape, x):
+    """Split an oriented polyline without discarding its intermediate vertices."""
+    for i, (start, end) in enumerate(pairwise(shape)):
+        if start[0] != end[0] and min(start[0], end[0]) <= x <= max(start[0], end[0]):
+            fraction = (x - start[0]) / (end[0] - start[0])
+            point = (x, start[1] + fraction * (end[1] - start[1]))
+            before = shape[:i + 1] if point == start else shape[:i + 1] + [point]
+            after = shape[i + 1:] if point == end else [point] + shape[i + 1:]
+            return point, before, after
+    raise ValueError(f"No polyline segment intersects x={x}.")
+
+
 def interpolate_y_coordinate(denorm_x_coordinate, horizontal_edges_veh_original_data):
-    """
-    Helper function to interpolate y-coordinate. 
-    top and bottom will have two coordinates. 
-
-    For both top and bottom: x-coordinate increases from left to right. y-coordinate increases from bottom to top.
-    """
-    coords = []
-    for direction in ['top', 'bottom']:
-        for _, edge_data in horizontal_edges_veh_original_data[direction].items():
-            #print(edge_data)
-            if edge_data['from_x'] <= denorm_x_coordinate <= edge_data['to_x']:
-                sign = +1 if edge_data['to_x'] > edge_data['from_x'] else -1
-                percentage_of_x = (denorm_x_coordinate - edge_data['from_x']) / (edge_data['to_x'] - edge_data['from_x'])
-                
-                y_coord = edge_data['from_y'] + sign * percentage_of_x * (edge_data['to_y'] - edge_data['from_y'])
-                coords.append(y_coord)
-
-    return coords[0] # only top one
+    """Place the crossing on the road's polyline, not its endpoint chord."""
+    for edge_data in horizontal_edges_veh_original_data['top'].values():
+        if min(edge_data['from_x'], edge_data['to_x']) <= denorm_x_coordinate <= max(edge_data['from_x'], edge_data['to_x']):
+            point, _, _ = split_polyline_at_x(edge_data['shape'], denorm_x_coordinate)
+            return point[1]
+    raise ValueError(f"No corridor road intersects x={denorm_x_coordinate}.")
 
 def save_graph_visualization(graph, iteration, run_dir):
     """
@@ -283,11 +294,18 @@ def get_initial_veh_edge_config(edges_dict, node_coords):
             edge_data = edges_dict[edge_id]
             from_node = edge_data.get('from')
             to_node = edge_data.get('to')
+            shape = edge_polyline(edge_data, node_coords[from_node], node_coords[to_node])
+            lane_attributes = dict(edge_data.find('lane').attrib)
+            # netconvert regenerates the lane offset and junction cutbacks from the road shape.
+            lane_attributes.pop('shape', None)
             veh_edges[direction][edge_id] = {
                 'from': from_node,
                 'to': to_node,
-                'from_x': node_coords[from_node],
-                'to_x': node_coords[to_node],
+                'from_x': node_coords[from_node][0],
+                'to_x': node_coords[to_node][0],
+                'shape': shape,
+                'attributes': dict(edge_data.attrib),
+                'lane_attributes': lane_attributes,
                 }
     return veh_edges
 
@@ -298,10 +316,10 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
     Update the connection root to reflect the new connections.
     """
 
-    # build a lookup of every vehicle node’s x-coordinate 
-    vehicle_nodes_x = {n.get('id'): float(n.get('x'))
-                       for n in ET.parse(original_nod_file).getroot().findall('node')}
-    node_coords = vehicle_nodes_x.copy()
+    node_coords = {
+        n.get('id'): (float(n.get('x')), float(n.get('y')))
+        for n in ET.parse(original_nod_file).getroot().findall('node')
+    }
 
     edges_dict = {edge.get('id'): edge for edge in ET.parse(original_edg_file).getroot().findall('edge')}
     iterative_edges = get_initial_veh_edge_config(edges_dict, node_coords) # Initialize iterative_edges with initial edge config.
@@ -310,8 +328,8 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
     for edge_id in edges_dict.keys():
         attributes_dict = edges_dict[edge_id].attrib # only from and to will be used
         # Add from_x and to_x to the attributes_dict
-        attributes_dict['from_x'] = node_coords[attributes_dict['from']]
-        attributes_dict['to_x'] = node_coords[attributes_dict['to']]
+        attributes_dict['from_x'] = node_coords[attributes_dict['from']][0]
+        attributes_dict['to_x'] = node_coords[attributes_dict['to']][0]
         all_edges[edge_id] = attributes_dict
 
     edges_to_remove = []
@@ -342,11 +360,14 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
                 
                 # print(f"Top edge {edge_id} intersects mnode {m_node} at x={x_coord:.2f}.")
                 edges_to_remove.append(edge_id)
+                _, right_shape, left_shape = split_polyline_at_x(edge_data['shape'], x_coord)
     
                 # Add new edges to edges_to_add
                 # Right part of split (from original to middle)
                 right_edge_id_top = f"{edge_id}_right{i}" # The same edge can be split multiple times. Value of i not necessarily corresponding to number of times split.
                 right_edge_data = {
+                    **edge_data,
+                    'shape': right_shape,
                     'new_node': m_node,
                     'from': edge_data['from'],
                     'to': m_node,
@@ -361,6 +382,8 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
                 # Left part of split (from middle to original)
                 left_edge_id_top = f"{edge_id}_left{i}" # The same edge can be split multiple times.
                 left_edge_data = {
+                    **edge_data,
+                    'shape': left_shape,
                     'new_node': m_node,
                     'from': m_node,
                     'to': edge_data['to'],
@@ -415,11 +438,14 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
                 
                 # print(f"Bottom edge {edge_id} intersects mnode {m_node} at x={x_coord:.2f}.")
                 edges_to_remove.append(edge_id) # Need to check both in top and bottom.
+                _, left_shape, right_shape = split_polyline_at_x(edge_data['shape'], x_coord)
                 
                 # Add new edges to edges_to_add
                 # Right part of split (In bottom, 'to' nodes are in the right, 'from' nodes are in the left)
                 right_edge_id_bottom = f"{edge_id}_right{i}" # The same edge can be split multiple times.
                 right_edge_data = {
+                    **edge_data,
+                    'shape': right_shape,
                     'new_node': m_node,
                     'to': edge_data['to'],
                     'from': m_node,
@@ -433,6 +459,8 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
                 # Left part of split
                 left_edge_id_bottom = f"{edge_id}_left{i}" # The same edge can be split multiple times.
                 left_edge_data = {
+                    **edge_data,
+                    'shape': left_shape,
                     'new_node': m_node,
                     'to': m_node,
                     'from': edge_data['from'],
@@ -473,6 +501,11 @@ def get_new_veh_edges_connections(middle_nodes_to_add, networkx_graph, original_
                         conn_root.append(new_connection)
                         conn_root.remove(connection)
     
+    for m_node, mapping in m_node_mapping.items():
+        if any(edge is None for direction in mapping.values() for edge in direction.values()):
+            x = networkx_graph.nodes[m_node]['pos'][0]
+            raise ValueError(f"Crossing {m_node} at x={x} must lie inside a road edge in both directions, not on an existing node.")
+
     # corrections.
     # We may have added a connection, but one of those edges may have gotten split later.
     # If a `from` or a `to` edge in a connection contains an edge in edges_to_remove, then we need to remove that connection.

@@ -180,6 +180,7 @@ name = "decor"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "eclipse-sumo" },
     { name = "gymnasium" },
     { name = "matplotlib" },
     { name = "networkx" },
@@ -198,6 +199,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eclipse-sumo", specifier = "==1.27.1" },
     { name = "gymnasium", specifier = "==0.29.1" },
     { name = "matplotlib", specifier = "==3.9.2" },
     { name = "networkx", specifier = "==3.3" },
@@ -206,11 +208,11 @@ requires-dist = [
     { name = "scipy", specifier = "==1.15.0" },
     { name = "seaborn", specifier = "==0.13.2" },
     { name = "setuptools", specifier = "==69.5.1" },
-    { name = "sumolib", specifier = "==1.22.0" },
+    { name = "sumolib", specifier = "==1.27.1" },
     { name = "tensorboard", specifier = "==2.17.0" },
     { name = "torch", specifier = "==2.3.1" },
     { name = "torch-geometric", specifier = "==2.6.1" },
-    { name = "traci", specifier = "==1.22.0" },
+    { name = "traci", specifier = "==1.27.1" },
     { name = "wandb", specifier = "==0.17.7" },
 ]
 
@@ -224,6 +226,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c5/e6/d1f6c00b7221e2d7c4b470132c931325c8b22c51ca62417e300f5ce16009/docker-pycreds-0.4.0.tar.gz", hash = "sha256:6ce3270bcaf404cc4c3e27e4b6c70d3521deae82fb508767870fdbf772d584d4", size = 8754, upload-time = "2018-11-29T03:26:50.996Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/e8/f6bd1eee09314e7e6dee49cbe2c5e22314ccdb38db16c9fc72d2fa80d054/docker_pycreds-0.4.0-py2.py3-none-any.whl", hash = "sha256:7266112468627868005106ec19cd0d722702d2b7d5912a28e19b826c3d37af49", size = 8982, upload-time = "2018-11-29T03:26:49.575Z" },
+]
+
+[[package]]
+name = "eclipse-sumo"
+version = "1.27.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sumo-data" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/6e/fef6f21243e6f58b57e8356af0d03e45733bf7817afc059b20aec375f431/eclipse_sumo-1.27.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:2255536237d81383efe5e53862b030e2dee6e18025210ff6ba4819f11edbb0d4", size = 53827663, upload-time = "2026-06-25T09:47:57.01Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/bc/4377e881434460531762e16cffb41a49a5c625e902193642e1af8d8e2a31/eclipse_sumo-1.27.1-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e557879511b66511943f0fa1b0f95d2c135d26e2b681665546deb8001133edd5", size = 77553233, upload-time = "2026-06-25T09:48:02.481Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/00/0b88a931c50e277a46ee6110216ef8ca299b064cca82d1fc481d4155754a/eclipse_sumo-1.27.1-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:97abddcb7395c25538f22a272ef67ca77c8a625d3eec6010eed5b62dfac011f3", size = 89032738, upload-time = "2026-06-25T09:48:07.868Z" },
+    { url = "https://files.pythonhosted.org/packages/31/ff/ac71562ad6dade48642c475c80d2c159ec7a83907e8ab9bb2d2f7fb59bda/eclipse_sumo-1.27.1-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:4b56e8bb331bee39d5a102feda7b3441fdfca4704a9ba4f7ed2cdf99ac19d915", size = 126468252, upload-time = "2026-06-25T09:48:15.001Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/13/401d9a7f8dbd404c7ec9cef95a7762a38d71088c38bf964789bc012428ce/eclipse_sumo-1.27.1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:fd96ace26bccb78312c8c04464c0894a5432db8e2c072388b73e8ae3a6a43586", size = 147105795, upload-time = "2026-06-25T09:48:22.856Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/c4/f12aa67ed92aae1b52de68c4dd73398119c16a2e4921050161d829bc8566/eclipse_sumo-1.27.1-py3-none-win_amd64.whl", hash = "sha256:80f68e916d10696a677a60db81f13d5340efae9451eaa8f3088e67e89870d6aa", size = 165702015, upload-time = "2026-06-25T09:48:30.96Z" },
 ]
 
 [[package]]
@@ -470,8 +488,8 @@ name = "mkl"
 version = "2021.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "intel-openmp", marker = "sys_platform != 'linux'" },
-    { name = "tbb", marker = "sys_platform != 'linux'" },
+    { name = "intel-openmp" },
+    { name = "tbb" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/c6/892fe3bc91e811b78e4f85653864f2d92541d5e5c306b0cb3c2311e9ca64/mkl-2021.4.0-py2.py3-none-win32.whl", hash = "sha256:439c640b269a5668134e3dcbcea4350459c4a8bc46469669b2d67e07e3d330e8", size = 129048357, upload-time = "2021-09-28T17:08:58.256Z" },
@@ -575,7 +593,7 @@ name = "nvidia-cudnn-cu12"
 version = "8.9.2.26"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cublas-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/74/a2e2be7fb83aaedec84f391f082cf765dfb635e7caa9b49065f73e4835d8/nvidia_cudnn_cu12-8.9.2.26-py3-none-manylinux1_x86_64.whl", hash = "sha256:5ccb288774fdfb07a7e7025ffec286971c06d8d7b4fb162525334616d7629ff9", size = 731725872, upload-time = "2023-06-01T19:24:57.328Z" },
@@ -602,9 +620,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.4.5.107"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cusparse-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/1d/8de1e5c67099015c834315e333911273a8c6aaba78923dd1d1e25fc5f217/nvidia_cusolver_cu12-11.4.5.107-py3-none-manylinux1_x86_64.whl", hash = "sha256:8a7ec542f0412294b15072fa7dab71d31334014a69f953004ea7a118206fe0dd", size = 124161928, upload-time = "2023-04-19T15:51:25.781Z" },
@@ -615,7 +633,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.1.0.106"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/65/5b/cfaeebf25cd9fdec14338ccb16f6b2c4c7fa9163aefcf057d86b9cc248bb/nvidia_cusparse_cu12-12.1.0.106-py3-none-manylinux1_x86_64.whl", hash = "sha256:f3b50f42cf363f86ab21f720998517a659a48131e8d538dc02f8768237bd884c", size = 195958278, upload-time = "2023-04-19T15:51:49.939Z" },
@@ -914,12 +932,22 @@ wheels = [
 ]
 
 [[package]]
-name = "sumolib"
-version = "1.22.0"
+name = "sumo-data"
+version = "1.27.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d7/6f/efae14870acce20d7cab4171fde1378a1df3d8379307e02b4dde4a6922db/sumolib-1.22.0.tar.gz", hash = "sha256:55f5578bea6c9dd960790f8e89c87913f23514111472feac1d747bd0d891013e", size = 93643, upload-time = "2025-02-05T09:26:35.191Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/bf/686c7577d9baaaec105ed75e7a245b79c7640cef570075f643a64dd80ae6/sumolib-1.22.0-py3-none-any.whl", hash = "sha256:22a1b0ecdaf2fa6a99df8ce0dfff50fbe56fd571002db70f5d2a1feb6b8a6d2c", size = 150909, upload-time = "2025-02-05T09:26:31.484Z" },
+    { url = "https://files.pythonhosted.org/packages/73/9d/1c4e7bb11044372fdeafad36a753b2c919b328d280820a14e1ac74f18290/sumo_data-1.27.1-py3-none-any.whl", hash = "sha256:2e547fd20558e07d6004d576eeaf85f4aa061efb4a9bab7675233726364fba61", size = 16189121, upload-time = "2026-06-25T09:50:30.943Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/f9/0ed46d6d8bed8d96f5901907903baea2200196741b579b1b6768396a9f7c/sumo_data-1.27.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:cc3f71bbeac8dc45a67ef90b023fa8d7ee4bd25c7f62f8006c5c036d545a9527", size = 116182082, upload-time = "2026-06-25T09:50:39.363Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/54/7cfac7fe78b9393ffc0487d799bbeebbdd508147cb84da1c43f19e33e63f/sumo_data-1.27.1-py3-none-win_amd64.whl", hash = "sha256:fa53a3cd34c2f9fd7137d055451b19c44b8972b65dcc15328d2f469647d6d38d", size = 129615571, upload-time = "2026-06-25T09:50:46.708Z" },
+]
+
+[[package]]
+name = "sumolib"
+version = "1.27.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/9e/fc02e2202b93ecfa3559afa972a5ac50c644a50c51412bdb52f9f76e279e/sumolib-1.27.1.tar.gz", hash = "sha256:0ceaeeb5c9913d8e38e998263e33702c1ed43829d9f961bb3a591d94fbe87018", size = 142135, upload-time = "2026-06-25T09:50:50.978Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/1f/216675079166eec8ae21b22db31e35d524799d26df1eadcc8746053586ba/sumolib-1.27.1-py2.py3-none-any.whl", hash = "sha256:2cc63e75de8db9219ab1a742a4f8870d1d2199881dcc006a0afbcdbb1e463796", size = 236203, upload-time = "2026-06-25T09:50:49.816Z" },
 ]
 
 [[package]]
@@ -1036,14 +1064,14 @@ wheels = [
 
 [[package]]
 name = "traci"
-version = "1.22.0"
+version = "1.27.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "sumolib" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fa/98/fec9616a11d66b2f516affec513035d657ea0b44c8a6060b3b4d10c01181/traci-1.22.0.tar.gz", hash = "sha256:ed5651b7e58bde3ed086ced8e5dc5cc8fb5dd5f951cf3b0d10a635678a7718f1", size = 94596, upload-time = "2025-02-05T09:26:37.017Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/63/3b0b1405396f12d977fbe50fe77196a6f8896143ecd75f85283bfdac42af/traci-1.27.1.tar.gz", hash = "sha256:9f5ccc66e02db316c078a3b010fea1c40510f0cb8434a2155bfe6248e9058787", size = 103403, upload-time = "2026-06-25T09:50:59.876Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/37/385dc7473230e0ef3a43d5437e1d727ebdf8a8cc500791becae87f533e2b/traci-1.22.0-py3-none-any.whl", hash = "sha256:7d18009eb45bc56409a0edf7c5e5bae477a72c5d022d0da0739f611dcf9bba77", size = 126362, upload-time = "2025-02-05T09:26:33.112Z" },
+    { url = "https://files.pythonhosted.org/packages/61/26/59f5b3ebdf57efbc45a89d47e95fdbe0d7349cb52e13be1d37722e97413e/traci-1.27.1-py2.py3-none-any.whl", hash = "sha256:b4f4fb1cd145461c318aa62df16cfd48494a46631a8c3b62348b901def670c9e", size = 138897, upload-time = "2026-06-25T09:50:58.734Z" },
 ]
 
 [[package]]

@@ -1,11 +1,16 @@
 import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 import numpy as np
+import sumolib
+import sumo
 import torch
 from torch_geometric.data import Batch, Data
 
@@ -14,6 +19,9 @@ from config import classify_and_return_args, get_config
 from ppo.models import GAT_v2_ActorCritic, MLP_ActorCritic
 from ppo.ppo import PPO
 from ppo.ppo_utils import Memory, WelfordNormalizer
+from simulation.control_env import ControlEnv
+from simulation.design_env import DesignEnv
+from simulation.sim_setup import get_intersection_phase_groups
 from utils import LearnedEvaluationUnavailable, load_design_policy, load_policy, require_exposed_heads, save_policy
 
 WORKERS = 1
@@ -234,6 +242,87 @@ class OneShotDesignTests(unittest.TestCase):
             require_exposed_heads(loaded_provenance["fixed_layout"], None)
         with self.assertRaisesRegex(LearnedEvaluationUnavailable, "provenance"):
             require_exposed_heads({"head_updates": loaded_provenance["fixed_layout"]["head_updates"]}, family)
+
+
+class IntersectionPriorityTests(unittest.TestCase):
+    def test_static_and_commanded_protected_greens_do_not_conflict(self):
+        path = get_config()["original_net_file"]
+        signal = "cluster_172228464_482708521_9687148201_9687148202_#5more"
+        node = sumolib.net.readNet(path, withInternal=True).getNode(signal)
+        links = [(c.getTLLinkIndex(), c.getJunctionIndex()) for c in node.getConnections()
+                 if c.getTLSID() == signal]
+        states = [p.get("state") for p in ET.parse(path).getroot().find(f"tlLogic[@id='{signal}']")]
+        env = ControlEnv.__new__(ControlEnv)
+        env.tl_ids = [signal]
+        env.int_tl_phase_groups, env.int_crosswalk_phase_groups = get_intersection_phase_groups()
+        with patch("simulation.control_env.traci.trafficlight.setRedYellowGreenState",
+                   side_effect=lambda _, state: states.append(state)):
+            for action in range(4):
+                env._apply_action([action], 0, [0])
+            for action in (0, 1):
+                for step in (0, 3, 4, 5, 9):
+                    env._apply_action([action], step, [1])
+        for state in states:
+            protected = [(link, index) for link, index in links if state[link] == "G"]
+            with self.subTest(state=state):
+                for offset, (first, first_index) in enumerate(protected):
+                    for second, second_index in protected[offset + 1:]:
+                        self.assertFalse(node.areFoes(first_index, second_index),
+                                         f"Protected movements {first} and {second} conflict in {state}")
+
+
+@unittest.skipUnless((Path(sumo.SUMO_HOME) / "bin/netconvert").is_file(), "SUMO netconvert is required")
+class NetworkConstructionTests(unittest.TestCase):
+    def test_builds_crossing_when_input_and_output_paths_contain_spaces(self):
+        config = get_config()
+        config.update(gui=False, gpu=False, save_graph_images=False, save_gmm_plots=False)
+        design, control, _, lower, _ = classify_and_return_args(config, "cpu")
+        with TemporaryDirectory(prefix="decor geometry ") as directory, torch.random.fork_rng():
+            source = Path(directory) / "corridor input.net.xml"
+            shutil.copyfile(design["original_net_file"], source)
+            design["original_net_file"] = str(source)
+            env = DesignEnv(design, control, lower, str(Path(directory) / "geometry output"))
+            env._apply_action(np.asarray([[.5, .4]]), "space check", crossing_ids=["west"])
+            network = ET.parse(env.current_net_file_path).getroot()
+            crossing = network.find("edge[@id=':west_mid_c0']/lane")
+            self.assertIsNotNone(crossing)
+            self.assertAlmostEqual(float(crossing.get("width")), 7.2)
+
+    def test_repeated_road_splits_preserve_bends_and_crossing_positions(self):
+        config = get_config()
+        config.update(gui=False, gpu=False, save_graph_images=False, save_gmm_plots=False)
+        design, control, _, lower, _ = classify_and_return_args(config, "cpu")
+        with TemporaryDirectory() as directory, torch.random.fork_rng():
+            env = DesignEnv(design, control, lower, directory)
+            env.reset()
+            original = ET.parse(Path(env.component_dir) / "original.edg.xml").getroot()
+            road = original.find("edge[@id='16666012#4']")
+            points = np.asarray([tuple(map(float, p.split(","))) for p in road.get("shape").split()])
+            locations = np.asarray([2385.0, 2420.0])
+            normalized = (locations - env.normalizer_x["min"]) / (env.normalizer_x["max"] - env.normalizer_x["min"])
+            env._apply_action(np.column_stack((normalized, [.2, .2])), "curves", crossing_ids=["west", "east"])
+            output = ET.parse(Path(env.component_dir) / "iteration_curves.edg.xml").getroot()
+            for direction in ("", "-"):
+                pieces = [
+                    np.asarray([tuple(map(float, p.split(","))) for p in edge.get("shape", "").split()])
+                    for edge in output.findall("edge") if edge.get("id").startswith(f"{direction}16666012#4_")
+                ]
+                self.assertEqual(len(pieces), 3)
+                self.assertTrue(all(len(piece) >= 2 for piece in pieces), "Split roads lost their polylines.")
+                length = sum(np.linalg.norm(np.diff(piece, axis=0), axis=1).sum() for piece in pieces)
+                self.assertAlmostEqual(length, np.linalg.norm(np.diff(points, axis=0), axis=1).sum(), places=7)
+                for point in points:
+                    self.assertTrue(any(np.array_equal(point, vertex) for piece in pieces for vertex in piece))
+            for crossing, x in zip(("west_mid", "east_mid"), locations):
+                self.assertAlmostEqual(env.iterative_networkx_graph.nodes[crossing]["pos"][1],
+                                       np.interp(x, points[:, 0], points[:, 1]), places=7)
+
+    def test_conversion_failure_surfaces_before_using_component_files(self):
+        with TemporaryDirectory() as directory:
+            env = DesignEnv.__new__(DesignEnv)
+            env.component_dir = directory
+            with self.assertRaises(subprocess.CalledProcessError):
+                env._create_component_xml_files(Path(directory) / "missing.net.xml")
 
 
 if __name__ == "__main__":
