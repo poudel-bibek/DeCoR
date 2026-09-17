@@ -51,16 +51,18 @@ The demand XML files encode origin-destination demand, not fully routed paths; r
 ---
 ### ⚙️ Setup
 
-- Install Eclipse SUMO 1.21 or [SUMO 1.22.0](https://github.com/eclipse-sumo/sumo/releases/tag/v1_22_0). Make sure `sumo`, `sumo-gui`, and `netconvert` are available on your `PATH`.
-- Verify SUMO:
+- Install Python 3.12 and [uv](https://docs.astral.sh/uv/). `pyproject.toml` and `uv.lock` pin Eclipse SUMO, `sumolib`, and `traci` to `1.27.1`.
+- Sync the project environment, including the SUMO binaries:
   ```bash
-  sumo --version
+  uv sync --frozen
   ```
-- Install Python 3.12 and [uv](https://docs.astral.sh/uv/). Python dependencies are defined in `pyproject.toml` and locked in `uv.lock`; `sumolib` and `traci` are pinned to `1.22.0`.
-- Sync the project environment:
+- Verify the project runtime and converter:
   ```bash
-  uv sync
+  uv run --frozen sumo --version
+  uv run --frozen netconvert --version
   ```
+- The environments use the binaries bundled with the installed `eclipse-sumo` package, not an unrelated system `SUMO_HOME` or `PATH` installation. `gui=True` uses its `sumo-gui` binary and requires a working graphical display.
+- Historical runs retain their recorded source and simulator versions. The new builder preserves curved road/sidewalk geometry and source sidewalk widths, and the intersection uses conflict-compatible protected greens. Do not reinterpret earlier results as validation of this revised geometry and signal behavior.
 
 ---
 ### 🚀 Training
@@ -260,7 +262,7 @@ Generators consume retained experiment data, not new simulation results. Some in
   ```bash
   ulimit -n 20000
   ```
-- If a run fails, check `netconvert_log.txt`, `sumo_logfile.txt`, and `sumo_errorlog.txt` in the relevant `runs/` subfolder.
+- If a run fails, inspect `components/iteration_*.netconvert.log` and `sumo_logfile*.txt` / `sumo_errorlog*.txt` in its `runs/` subfolder. Converter logs are retained separately for each layout.
 
 ---
 ### 📖 Citation

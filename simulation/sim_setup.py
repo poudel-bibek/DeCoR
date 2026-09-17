@@ -110,31 +110,31 @@ def get_intersection_phase_groups():
     """
 
     int_tl_phase_groups = {
-        0: "GGGGrrrrGGGGrrrr", # east-straight, east-right, west-straight, west-right, since east-left and west-left share the lane, they are also G. Same for u-turns. 
-        1: "rrrrGGrrrrrrGGrr", # north-straight, north-right, south-straight, south-right
-        2: "rrrrrrGGrrrrrrGG", # north-east, south-west (for visuals, make u-turn ON as well)
+        0: "gGggrrrrgGggrrrr", # E-W through traffic has priority; turns yield to vehicles and pedestrians.
+        1: "rrrrgGrrrrrrgGrr", # N-S through traffic has priority; right turns yield to pedestrians.
+        2: "rrrrrrGgrrrrrrGg", # Protected N-S left turns; U-turns yield.
         3: "rrrrrrrrrrrrrrrr", # all red
         4: { 0: "yyrrrrrryyrrrrrr", # switch from 0 to 1
             1: "yyrrrrrryyrrrrrr",
             2: "yyrrrrrryyrrrrrr",
             3: "yyrrrrrryyrrrrrr",
             4: "rrrrrrrrrrrrrrrr",
-            5: "rrrrGGrrrrrrGGrr",
-            6: "rrrrGGrrrrrrGGrr",
-            7: "rrrrGGrrrrrrGGrr",
-            8: "rrrrGGrrrrrrGGrr",
-            9: "rrrrGGrrrrrrGGrr",
+            5: "rrrrgGrrrrrrgGrr",
+            6: "rrrrgGrrrrrrgGrr",
+            7: "rrrrgGrrrrrrgGrr",
+            8: "rrrrgGrrrrrrgGrr",
+            9: "rrrrgGrrrrrrgGrr",
         }, 
         5: { 0: "rrrryyrrrrrryyrr", # switch from 1 to 0
             1: "rrrryyrrrrrryyrr",
             2: "rrrryyrrrrrryyrr",
             3: "rrrryyrrrrrryyrr",
             4: "rrrrrrrrrrrrrrrr",
-            5: "GGGGrrrrGGGGrrrr",
-            6: "GGGGrrrrGGGGrrrr",
-            7: "GGGGrrrrGGGGrrrr",
-            8: "GGGGrrrrGGGGrrrr",
-            9: "GGGGrrrrGGGGrrrr",
+            5: "gGggrrrrgGggrrrr",
+            6: "gGggrrrrgGggrrrr",
+            7: "gGggrrrrgGggrrrr",
+            8: "gGggrrrrgGggrrrr",
+            9: "gGggrrrrgGggrrrr",
         }
     }
             
@@ -227,20 +227,7 @@ def get_related_lanes_edges():
                     "north-right": ['773672648#0_0'],
                     "north-left": ['773672648#0_2'],
                 },
-                "inside": {
-                    "south-straight": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_5'],
-                    "south-right": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_4'],
-                    "south-left": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_6'],
-                    "west-straight": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_9'],
-                    "west-right": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_8'],
-                    "west-left": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_10'],
-                    "east-straight": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_1'],
-                    "east-right": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_0'],
-                    "east-left": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_2'],
-                    "north-straight": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_13'],
-                    "north-right": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_12'],
-                    "north-left": ['edge.:cluster_172228464_482708521_9687148201_9687148202_#5more_14'],
-                },
+                "inside": {},  # Filled from the active network's controlled-link chains.
                 "outgoing": {
                     "west": ['-1060131306#0_0'] , 
                     "south": ['773672649#1_0'],

@@ -3,6 +3,7 @@ import time
 import traci
 import torch
 import sumolib
+import sumo
 import random
 import gymnasium as gym
 import numpy as np
@@ -1439,7 +1440,7 @@ class ControlEnv(gym.Env):
 
 
         # Workers share read-only geometry; each keeps its own SUMO logs.
-        sumo_cmd = ["sumo-gui" if self.use_gui else "sumo",
+        sumo_cmd = [os.path.join(sumo.SUMO_HOME, "bin", "sumo-gui" if self.use_gui else "sumo"),
                     "--quit-on-end",
                     "--net-file", f"{self.run_dir}/network_iterations/network_iteration_{self.network_iteration}.net.xml",
                     "--log", f"{self.run_dir}/sumo_logfile{self.traci_label}.txt",
@@ -1643,10 +1644,17 @@ class ControlEnv(gym.Env):
     #     angle = min(angle, 180 - angle)                 # mirror so 90° is “up/down”
     #     return angle >= 90 - thresh                     # within thresh of vertical
 
+    def _internal_edges(self, via, outgoing):
+        """Follow a movement across internal waiting junctions to its exit lane."""
+        while via:
+            yield traci.lane.getEdgeID(via)
+            via = next(link[4] for link in traci.lane.getLinks(via, extended=True)
+                       if link[0] == outgoing)
+
     def dynamically_populate_edges_lanes(self, extreme_edge_dict, real_world=False):
         """
         Get midblock TLs lanes/edges for occupancy map to use. i.e., update self.tl_lane_dict with latest network iteration.
-        - For vehicle + inside (pedestrians dont have inside), use the mid-block TL id with _0 for west-straight, _1 for east-straight.
+        - For vehicle + inside, follow the controlled connections' actual internal edges.
         - For vehicle  + incoming or outgoing, use controlled_links but need to add more until either total length is equal to cut off distance or we encounter another TL. 
         - For pedestrians + outgoing, use the mid-block TL id with _c0 
         - For pedestrians + incoming, use the mid-block TL id with _w0 and _w1 (there will be more.) 
@@ -1661,13 +1669,25 @@ class ControlEnv(gym.Env):
                     self.tl_lane_dict[tl_id]["vehicle"]["incoming"]["east-straight"] = [f"-{extreme_edge_dict['leftmost']['new']}_0"]
                     # counterpart
                     self.tl_lane_dict[tl_id]["vehicle"]["outgoing"]["east"] = [f"{extreme_edge_dict['leftmost']['new']}_0"]
+                controlled_links = traci.trafficlight.getControlledLinks(tl_id)
+                inside = self.tl_lane_dict[tl_id]["vehicle"]["inside"]
+                for offset, direction in enumerate(("east", "south", "west", "north")):
+                    for index, turn in enumerate(("right", "straight", "left")):
+                        inside[f"{direction}-{turn}"] = [
+                            f"edge.{edge}" for _, outgoing, via in controlled_links[4 * offset + index]
+                            for edge in self._internal_edges(via, outgoing)]
             
             # Skip if the traffic light ID already exists in the dictionary
             if tl_id in self.tl_lane_dict:
                 continue
             else: 
-                # controlled_links = traci.trafficlight.getControlledLinks(tl_id)
-                # west_in, east_in, west_out, east_out = self._straight_links(controlled_links)
+                inside_edges = {"west-straight": [], "east-straight": []}
+                for links in traci.trafficlight.getControlledLinks(tl_id):
+                    for incoming, outgoing, via in links:
+                        if not via or incoming.startswith(':') or incoming.startswith('-') != outgoing.startswith('-'):
+                            continue
+                        direction = "west-straight" if incoming.startswith('-') else "east-straight"
+                        inside_edges[direction].extend(self._internal_edges(via, outgoing))
 
                 tl_internal = f":{tl_id}"
                 self.tl_lane_dict[tl_id] = {
@@ -1681,10 +1701,7 @@ class ControlEnv(gym.Env):
                         #     "west-straight": [west_out],
                         #     "east-straight": [east_out]
                         # }
-                        "inside": {
-                            "west-straight": [f"{tl_internal}_0"],
-                            "east-straight": [f"{tl_internal}_1"]
-                        },
+                        "inside": inside_edges,
                         
                     },
                     "pedestrian": {

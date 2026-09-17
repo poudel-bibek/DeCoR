@@ -46,6 +46,9 @@ wandb/
 /simulation/scaled_trips/
 
 CLAUDE.md
+AGENTS.md
+TODO.md
+docs/
 
 ablation/
 DeCoR writeup/

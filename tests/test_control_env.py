@@ -113,15 +113,39 @@ class ControlObservationTests(unittest.TestCase):
         self.assertEqual(env.tl_ids, [INTERSECTION, 'left', 'right'])
         np.testing.assert_array_equal(env.active_slots, [0, 1])
 
-    def test_generated_pedestrian_edges_preserve_mid_inside_logical_id(self):
+    def test_inside_occupancy_follows_physical_links_not_internal_edge_numbers(self):
         env = observation_env(0)
-        env.tl_ids = ['midblock_west_mid']
+        signal = 'midblock_west_mid'
+        env.tl_ids = [signal]
+        env.direction_turn_midblock = ['west-straight', 'east-straight']
         env.tl_lane_dict = {}
-        env.dynamically_populate_edges_lanes({})
-        incoming = env.tl_lane_dict['midblock_west_mid']['pedestrian']['incoming']['north']['main']
-        self.assertEqual(incoming, [':midblock_west_mid_w0', ':midblock_west_mid_w1',
-                                   'edge_midblock_west_top_midblock_west_mid',
-                                   'edge_midblock_west_bottom_midblock_west_mid'])
+        links = [
+            [('-road_right_0', '-road_left_0', f':{signal}_0_0')],
+            [('road_left_0', 'road_right_0', f':{signal}_2_0')],
+            [(f':{signal}_w1_0', f':{signal}_c0_0', '')],
+        ]
+        roads = {'west': f':{signal}_0', 'east': f':{signal}_2',
+                 'east_continuation': f':{signal}_5', 'turn': f':{signal}_1'}
+        continuations = {
+            f':{signal}_0_0': [('-road_left_0', True, True, False, '', 'G', 's', 3.)],
+            f':{signal}_2_0': [('road_right_0', False, True, False, f':{signal}_5_0', 'm', 's', 3.)],
+            f':{signal}_5_0': [('road_right_0', True, True, False, '', 'M', 's', 3.)],
+        }
+        with patch('simulation.control_env.traci.trafficlight.getControlledLinks', return_value=links), \
+             patch('simulation.control_env.traci.lane.getEdgeID', side_effect=lambda lane: lane.rsplit('_', 1)[0]), \
+             patch('simulation.control_env.traci.lane.getLinks', side_effect=lambda lane, **kwargs: continuations[lane]):
+            env.dynamically_populate_edges_lanes({})
+        env._get_vehicle_occupancy_midblock = lambda *args: {
+            signal: {group: {direction: [] for direction in env.direction_turn_midblock}
+                     for group in ['incoming', 'outgoing']}}
+        with patch('simulation.control_env.traci.person.getIDList', return_value=[]), \
+             patch('simulation.control_env.traci.edge.getLastStepPersonIDs', return_value=[]), \
+             patch('simulation.control_env.traci.vehicle.getIDList', return_value=list(roads)), \
+             patch('simulation.control_env.traci.vehicle.getPosition', return_value=(0, 0)), \
+             patch('simulation.control_env.traci.vehicle.getRoadID', side_effect=roads.__getitem__):
+            occupancy, _ = ControlEnv._get_occupancy_map(env)
+        self.assertEqual(occupancy[signal]['vehicle']['inside'],
+                         {'west-straight': ['west'], 'east-straight': ['east', 'east_continuation']})
 
     def test_generated_layouts_keep_explicit_identities_and_start_fresh_without_metadata(self):
         env = DesignEnv.__new__(DesignEnv)
@@ -133,11 +157,12 @@ class ControlObservationTests(unittest.TestCase):
         for side, y in [('top', 10), ('bottom', -10)]:
             for end, x in [('left', 0), ('right', 100)]:
                 env.base_networkx_graph.add_node(f'{end}_{side}', pos=(x, y), type='regular', width=-1)
-            env.base_networkx_graph.add_edge(f'left_{side}', f'right_{side}', width=2)
+            env.base_networkx_graph.add_edge(f'left_{side}', f'right_{side}', width=2,
+                                            shape=[(0, y), (100, y)], shape_from=f'left_{side}')
         env.horizontal_nodes_top_ped = ['left_top', 'right_top']
         env.horizontal_nodes_bottom_ped = ['left_bottom', 'right_bottom']
         env.horizontal_edges_veh_original_data = {
-            side: {'road': {'from_x': 0, 'to_x': 100, 'from_y': y, 'to_y': y}}
+            side: {'road': {'from_x': 0, 'to_x': 100, 'shape': [(0, y), (100, y)]}}
             for side, y in [('top', 1), ('bottom', -1)]}
         variants = [
             [('east', .8, .2, 7), ('midblock_west', .2, .3, 1)],

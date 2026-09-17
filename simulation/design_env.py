@@ -1,5 +1,6 @@
 import wandb
 import subprocess
+import sumo
 import gymnasium as gym
 import networkx as nx
 import numpy as np
@@ -209,7 +210,10 @@ class DesignEnv(gym.Env):
                 if from_node is not None and to_node is not None:
                     # Add edge with its attributes
                     width = float(edge.get('width', 2.0)) # default width is 2.0
-                    G.add_edge(from_node, to_node, id=edge.get('id'), width=width)
+                    shape = edge_polyline(edge, G.nodes[from_node]['pos'], G.nodes[to_node]['pos'])
+                    G.add_edge(from_node, to_node, id=edge.get('id'), width=width,
+                               shape=shape,
+                               shape_from=from_node)
                     
                     # Mark these nodes as part of pedestrian network
                     pedestrian_nodes.add(from_node)
@@ -225,15 +229,18 @@ class DesignEnv(gym.Env):
         Creates the base SUMO files (5 files).
         """
         # Run netconvert with output files in the specified directory
-        command = f"netconvert --sumo-net-file {sumo_net_file} --plain-output-prefix {self.component_dir}/original --plain-output.lanes true"
+        command = [os.path.join(sumo.SUMO_HOME, "bin", "netconvert"), "--sumo-net-file", str(sumo_net_file),
+                   "--plain-output-prefix", f"{self.component_dir}/original",
+                   "--plain-output.lanes", "true"]
 
         try:
-            result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
             if result.stderr:
                 print("Warnings/Errors from netconvert:", result.stderr)
         except subprocess.CalledProcessError as e:
             print(f"Error running netconvert: {e}")
             print("Error output:", e.stderr)
+            raise
 
     def step(self, 
              padded_proposals, 
@@ -420,8 +427,8 @@ class DesignEnv(gym.Env):
 
         # First make a copy
         self.iterative_networkx_graph = self.base_networkx_graph.copy()
-        latest_horizontal_nodes_top_ped = self.horizontal_nodes_top_ped
-        latest_horizontal_nodes_bottom_ped = self.horizontal_nodes_bottom_ped
+        latest_horizontal_nodes_top_ped = self.horizontal_nodes_top_ped.copy()
+        latest_horizontal_nodes_bottom_ped = self.horizontal_nodes_bottom_ped.copy()
 
         for i, (location, thickness) in enumerate(proposals):
             location = location.item() 
@@ -454,8 +461,13 @@ class DesignEnv(gym.Env):
                 end_node_pos = new_intersects[side]['intersection_pos']
                 end_node_id = f"{self.crossing_ids[i]}_{side}"
                 self.iterative_networkx_graph.add_node(end_node_id, pos=end_node_pos, type='regular', width=-1) # type for this is regular (width specified for completeness as -1: Not used)
-                self.iterative_networkx_graph.add_edge(from_node, end_node_id, width=2.0) # The width of these edges is default (Not from the proposal)
-                self.iterative_networkx_graph.add_edge(end_node_id, to_node, width=2.0)
+                width = new_intersects[side]['edge'][2]['width']
+                self.iterative_networkx_graph.add_edge(
+                    from_node, end_node_id, width=width,
+                    shape=new_intersects[side]['shape_before'], shape_from=from_node)
+                self.iterative_networkx_graph.add_edge(
+                    end_node_id, to_node, width=width,
+                    shape=new_intersects[side]['shape_after'], shape_from=end_node_id)
 
                 # Modify the horizontal segment (add the new node)
                 if side == 'top':
@@ -517,22 +529,16 @@ class DesignEnv(gym.Env):
 
             from_node, to_node = intersect['edge'][0], intersect['edge'][1]
             
-            # Extract node positions
-            from_x, from_y = latest_graph.nodes[from_node]['pos']
-            to_x, to_y = latest_graph.nodes[to_node]['pos']
-
-            # Ensure from_x < to_x for consistency
-            if from_x > to_x:
-                from_x, to_x = to_x, from_x
-                from_y, to_y = to_y, from_y
-
-            # Compute how far along the segment x_location lies as a fraction
-            x_diff = (x_location - from_x) / (to_x - from_x) + 1e-6 # Avoid division by zero 
-            # Now simply interpolate y
-            y_location = from_y + x_diff * (to_y - from_y)
+            edge_data = intersect['edge'][2]
+            shape = edge_data['shape']
+            if edge_data['shape_from'] != from_node:
+                shape = list(reversed(shape))
+            point, before, after = split_polyline_at_x(shape, x_location)
 
             intersections[side]['edge'] = intersect['edge']
-            intersections[side]['intersection_pos'] = (x_location, y_location)
+            intersections[side]['intersection_pos'] = point
+            intersections[side]['shape_before'] = before
+            intersections[side]['shape_after'] = after
 
         return intersections
 
@@ -777,57 +783,11 @@ class DesignEnv(gym.Env):
         return torch.stack([normalized_x, normalized_y], dim=1), range_x, range_y
     
     def _get_original_veh_edge_config(self):
-        """
-        Get the original vehicle edge config from the original XML component files.
-        """
-
-        horizontal_edges_veh= {
-        'top': ['-16666012#2', '-16666012#3', '-16666012#4', '-16666012#5', 
-                                '-16666012#6', '-16666012#7', '-16666012#9', '-16666012#11', 
-                                '-16666012#12', '-16666012#13', '-16666012#14', '-16666012#15', 
-                                '-16666012#16', '-16666012#17'],
-        'bottom': ['16666012#2', '16666012#3', '16666012#4', '16666012#5',
-                                    '16666012#6', '16666012#7', '16666012#9', '16666012#11',
-                                    '16666012#12', '16666012#13', '16666012#14', '16666012#15',
-                                    '16666012#16', '16666012#17']
-                                }
-        
-        node_file = f'{self.component_dir}/original.nod.xml'
-        node_tree = ET.parse(node_file)
-        node_root = node_tree.getroot()
-
-        edge_file = f'{self.component_dir}/original.edg.xml'
-        edge_tree = ET.parse(edge_file)
-        edge_root = edge_tree.getroot()
-
-        horizontal_edges_veh_original_data = {
-            'top': {},
-            'bottom': {}}
-
-        for direction in ['top', 'bottom']:
-            for edge in edge_root.findall('edge'):
-                id = edge.get('id')
-                if id in horizontal_edges_veh[direction]:
-                    from_node = edge.get('from')
-                    from_node_data = node_root.find(f'node[@id="{from_node}"]')
-                    # Convert coordinates to float
-                    from_x = float(from_node_data.get('x'))
-                    from_y = float(from_node_data.get('y'))
-
-                    to_node = edge.get('to')
-                    to_node_data = node_root.find(f'node[@id="{to_node}"]')
-                    # Convert coordinates to float
-                    to_x = float(to_node_data.get('x'))
-                    to_y = float(to_node_data.get('y'))
-
-                    horizontal_edges_veh_original_data[direction][id] = {
-                        'from_x': from_x,
-                        'from_y': from_y, 
-                        'to_x': to_x,
-                        'to_y': to_y
-                    }
-
-        return horizontal_edges_veh_original_data
+        """Read the same source road geometry used by the iterative splitter."""
+        nodes = ET.parse(f'{self.component_dir}/original.nod.xml').getroot()
+        edges = ET.parse(f'{self.component_dir}/original.edg.xml').getroot()
+        node_coords = {node.get('id'): (float(node.get('x')), float(node.get('y'))) for node in nodes.findall('node')}
+        return get_initial_veh_edge_config({edge.get('id'): edge for edge in edges.findall('edge')}, node_coords)
     
 
     def _update_xml_files(self, networkx_graph, iteration):
@@ -970,7 +930,7 @@ class DesignEnv(gym.Env):
         middle_nodes_to_add = []
         # print(f"\nNodes to add: {node_ids_to_add}")
 
-        for nid in node_ids_to_add:
+        for nid in sorted(node_ids_to_add):
             node_data = networkx_graph.nodes[nid]
             x, y = node_data['pos']
             n_type = node_data.get('type', 'regular')
@@ -990,7 +950,7 @@ class DesignEnv(gym.Env):
 
         # Find the edges to add (present in networkx graph but not in XML component file).
         ped_edges_to_add = set(networkx_graph.edges()) - set(edges_in_xml.keys()) # These are all pedestrian edges.
-        ped_edges_to_add = list(ped_edges_to_add)
+        ped_edges_to_add = sorted(ped_edges_to_add)
         # print(f"\nPedestrian edges to add: Total: {len(ped_edges_to_add)},\n {ped_edges_to_add}\n")
 
         # The edge could be from a type = "regular" node to a type = "regular" node or from a type = "regular" node to a type = "middle" node (crossing).
@@ -1013,12 +973,11 @@ class DesignEnv(gym.Env):
                 'allow': 'pedestrian'
             }
 
-            # positions of f and t nodes
-            f_data = networkx_graph.nodes[f]
-            t_data = networkx_graph.nodes[t]
-            f_x, f_y = round(f_data['pos'][0], 2), round(f_data['pos'][1], 2)
-            t_x, t_y = round(t_data['pos'][0], 2), round(t_data['pos'][1], 2)
-            shape = f'{f_x},{f_y} {t_x},{t_y}'
+            points = edge_data.get('shape', [networkx_graph.nodes[f]['pos'], networkx_graph.nodes[t]['pos']])
+            if edge_data.get('shape_from', f) != f:
+                points = list(reversed(points))
+            shape = ' '.join(f'{x},{y}' for x, y in points)
+            edge_attribs['shape'] = shape
 
             edge_element = ET.Element('edge', edge_attribs)
             edge_element.text = "\n\t\t" 
@@ -1040,7 +999,7 @@ class DesignEnv(gym.Env):
             edge_root.append(edge_element)
 
         # Every middle node (present in middle_nodes_to_add) falls on a certain vehicle edge. Split the vehicle edges into two new edges.
-        # The new edge names have left and right attached to the old names (the new edges inherit respective portions of the edge shape and lane shape property of the old edge)
+        # New road edges retain their source polyline; netconvert derives lane offsets and junction cutbacks.
         # This happens iteratively (because multiple middle nodes may fall on the same vehicle edge) and is a bit complex.
         old_veh_edges_to_remove, new_veh_edges_to_add, updated_conn_root, m_node_mapping = get_new_veh_edges_connections(middle_nodes_to_add, 
                                                                                                          networkx_graph, 
@@ -1052,26 +1011,17 @@ class DesignEnv(gym.Env):
         for direction in ['top', 'bottom']:
             for edge_id, edge_data in new_veh_edges_to_add[direction].items():
                 edge_attribs = {
+                    **edge_data['attributes'],
                     'id': edge_id,
-                    'from': edge_data.get('from'),
-                    'to': edge_data.get('to'),
-                    'name': "Craver Road Iterative Addition",
-                    'priority': "10",
-                    'type': "highway.tertiary",
-                    'numLanes': "1",
-                    'speed': "8.94",
-                    'disallow': "pedestrian tram rail_urban rail rail_electric rail_fast ship cable_car subway"
+                    'from': edge_data['from'],
+                    'to': edge_data['to'],
+                    'shape': ' '.join(f'{x},{y}' for x, y in edge_data['shape']),
                 }
 
                 edge_element = ET.Element('edge', edge_attribs)
                 edge_element.text = "\n\t\t"
 
-                lane_element = ET.SubElement(edge_element, 
-                                             'lane', 
-                                             index='0', 
-                                             disallow="pedestrian tram rail_urban rail rail_electric rail_fast ship cable_car subway", 
-                                             speed="8.94", 
-                                             )
+                lane_element = ET.SubElement(edge_element, 'lane', edge_data['lane_attributes'])
 
                 lane_element.text = "\n\t\t\t"
                 param_element = ET.SubElement(lane_element, 'param', key='origId', value=edge_id.split('#')[0].replace('-', '')) # remove the negative sign and #
@@ -1181,31 +1131,9 @@ class DesignEnv(gym.Env):
         # They have the edges attribute (which are edges to the right) and outlineShape attribute (the shape of the crossing): 
         # outlineShape seems hard to specify, lets not specify and see what it does. They mention it as optional here: https://github.com/eclipse-sumo/sumo/issues/11668
         for m_node, mapping_data in m_node_mapping.items():
-            # Retrieve the 'from' edge for the top side
+            # Both east-side edges come from the physical split map, not an ID spelling convention.
             e1 = mapping_data['top']['from']
-            # if e1 is None:
-            #     print(f"[ERROR crossing] iteration={iteration}, m_node={m_node} - 'from' edge is None; mapping_data={mapping_data}")
-            #     # Additional debug for None 'from' edge
-            #     pos = networkx_graph.nodes[m_node].get('pos')
-            #     print(f"[DEBUG crossing] m_node '{m_node}' position: {pos}")
-            #     bottom_map = mapping_data['bottom']
-            #     print(f"[DEBUG crossing] mapping_data['bottom']: {bottom_map}")
-            #     # Debug horizontal segments on current graph
-            #     horiz_seg = self._get_horizontal_segment_ped(
-            #         self.horizontal_nodes_top_ped, 
-            #         self.horizontal_nodes_bottom_ped, 
-            #         networkx_graph
-            #     )
-            #     print(f"[DEBUG crossing] horizontal_segment top: {horiz_seg['top']}")
-            #     print(f"[DEBUG crossing] horizontal_segment bottom: {horiz_seg['bottom']}")
-            #     print(f"[DEBUG crossing] horizontal_nodes_top: {self.horizontal_nodes_top_ped}")
-            #     print(f"[DEBUG crossing] horizontal_nodes_bottom: {self.horizontal_nodes_bottom_ped}")
-            #     continue
-            
-            if '-' in e1:
-                e2 = e1.replace('-', '')
-            else:
-                e2 = '-' + e1
+            e2 = mapping_data['bottom']['to']
             width = networkx_graph.nodes[m_node].get('width')
             crossing_attribs = {'node': m_node, 'edges': e1 + ' ' + e2, 'priority': '1', 'width': str(width), 'linkIndex': '2'} # Width/ Thickness needs to come from the model.
             crossing_element = ET.Element('crossing', crossing_attribs)
@@ -1293,23 +1221,23 @@ class DesignEnv(gym.Env):
         # Generate the final net file using netconvert
         self.current_net_file_path = f'{self.network_dir}/network_iteration_{iteration}.net.xml'
         self.current_network_iteration = iteration
-        netconvert_log_file = f'{self.run_dir}/netconvert_log.txt'
-        command = (
-            f"netconvert "
-            f"--node-files={iteration_prefix}.nod.xml "
-            f"--edge-files={iteration_prefix}.edg.xml "
-            f"--connection-files={iteration_prefix}.con.xml "
-            f"--type-files={iteration_prefix}.typ.xml "
-            f"--tllogic-files={iteration_prefix}.tll.xml " # using TLL file (against advice from Jakob)
-            f"--output-file={self.current_net_file_path} "
-            f"--log={netconvert_log_file}"
-        )
+        netconvert_log_file = f'{iteration_prefix}.netconvert.log'
+        command = [
+            os.path.join(sumo.SUMO_HOME, "bin", "netconvert"),
+            f"--node-files={iteration_prefix}.nod.xml",
+            f"--edge-files={iteration_prefix}.edg.xml",
+            f"--connection-files={iteration_prefix}.con.xml",
+            f"--type-files={iteration_prefix}.typ.xml",
+            f"--tllogic-files={iteration_prefix}.tll.xml",
+            f"--output-file={self.current_net_file_path}",
+            f"--log={netconvert_log_file}",
+        ]
 
         max_attempts = 3
         attempt = 0
         while attempt < max_attempts:
             try:
-                result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
                 if result.stderr:
                     print(f"Warnings/Errors from netconvert: {result.stderr}")
                 break

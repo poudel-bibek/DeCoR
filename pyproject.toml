@@ -5,6 +5,7 @@ description = "Design and Control Co-Optimization for urban streets using reinfo
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "eclipse-sumo==1.27.1",
     "gymnasium==0.29.1",
     "matplotlib==3.9.2",
     "networkx==3.3",
@@ -13,11 +14,11 @@ dependencies = [
     "scipy==1.15.0",
     "seaborn==0.13.2",
     "setuptools==69.5.1",
-    "sumolib==1.22.0",
+    "sumolib==1.27.1",
     "tensorboard==2.17.0",
     "torch==2.3.1",
     "torch-geometric==2.6.1",
-    "traci==1.22.0",
+    "traci==1.27.1",
     "wandb==0.17.7",
 ]
 
