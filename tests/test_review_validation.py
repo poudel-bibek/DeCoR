@@ -667,5 +667,223 @@ class JourneyCohortTest(unittest.TestCase):
             traci.trafficlight.setPhase.assert_called_once_with('crossing', 1)
 
 
+class FeedbackComparisonTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.manifest = self.folder / "manifest.json"
+        self.protocol = {"timings": [[15, 10], [30, 20]], "selection_scales": [1.0],
+                         "selection_seeds": [1, 2], "evaluation_scales": [.5, 2.0],
+                         "evaluation_seeds": [11, 12], "practical_margin_s": 1.0}
+        review.save(self.manifest, {"feedback_protocol": self.protocol,
+                                   "active_arms": ["tuned_fixed", "actuated"],
+                                   "layouts": {f"placement_{i:03d}": {} for i in range(5)},
+                                   "criterion": "equal-class journey cost", "scope": "test fixture"})
+        for job in review.feedback_jobs(self.folder, "selection"):
+            index = int(job["layout"].split("_")[-1])
+            access, wait, vehicle = [(1, 20, 30), (5, 1, 20), (7, 2, 1), (0, 0, 0), (0, 0, 0)][index]
+            extra = 30 if job.get("parameters") == [15, 10] else 0
+            self.record(job, access, wait + extra, vehicle, 100 + access + wait + extra,
+                        incomplete=index == 3 and job["seed"] == 2, teleport=index == 4)
+
+    def record(self, job, access, wait, vehicle, journey, incomplete=False, teleport=False):
+        result = {"job": job, "manifest_sha256": review.digest(self.manifest),
+                  "warmup_s": 100, "measurement_s": 450, "elapsed_s": .1,
+                  "traffic": {kind: {"demand_sha256": f"{kind}/{job['seed']}/{job['scale']}"}
+                              for kind in ("vehicle", "pedestrian")},
+                  "feedback": {"access_mean_s": access, "approach_wait_mean_s": wait},
+                  "journeys": {"cohort": {
+                      "simulation_end_s": 650, "drain_s": 100,
+                      "traffic": {"pedestrian": {"all_completed": not incomplete, "censored": int(incomplete), "scheduled": 1,
+                                                "journey_mean_s": None if incomplete else journey},
+                                  "vehicle": {"all_completed": True, "censored": 0, "scheduled": 1,
+                                              "time_loss_plus_insertion_delay_mean_s": vehicle}},
+                      "teleports": [{"id": "teleported"}] if teleport else [], "collisions": []}}}
+        review.save(Path(job["directory"]) / "result.json", result)
+
+    def test_selection_uses_complete_cohorts_and_all_three_information_scores(self):
+        selected = review.select_feedback(self.folder, {})
+        expected = {"access": "placement_000", "access_wait": "placement_001",
+                    "access_wait_vehicle": "placement_002"}
+        self.assertEqual(selected["choices"], {"tuned_fixed": expected, "actuated": expected})
+        self.assertEqual(selected["timings"]["placement_000"], [30, 20])
+        self.assertIsNone(selected["timings"]["placement_003"])
+        self.assertIsNone(selected["timings"]["placement_004"])
+        for candidate in selected["candidates"]:
+            if candidate["layout"] in ("placement_003", "placement_004"):
+                self.assertEqual(candidate["scores"], {rule: None for rule in expected})
+        frozen = (self.folder / "feedback_selection.json").read_bytes()
+        with self.assertRaises(FileExistsError):
+            review.select_feedback(self.folder, {})
+        self.assertEqual((self.folder / "feedback_selection.json").read_bytes(), frozen)
+
+    def test_no_eligible_layout_preserves_failures_and_blocks_evaluation(self):
+        jobs = review.feedback_jobs(self.folder, "selection")
+        failures = {job["directory"]: "SUMO failed" for job in jobs}
+        with self.assertRaises(RuntimeError):
+            review.select_feedback(self.folder, failures)
+        selected = json.loads((self.folder / "feedback_selection.json").read_text())
+        self.assertFalse(selected["complete"])
+        self.assertTrue(all(value is None for choices in selected["choices"].values() for value in choices.values()))
+        self.assertTrue(all(row["error"] == "SUMO failed" for candidate in selected["candidates"]
+                            for variant in candidate["timing_trials"] for row in variant["rows"]))
+        with self.assertRaises(RuntimeError):
+            review.feedback_jobs(self.folder, "evaluation")
+
+    def test_changed_selection_evidence_cannot_release_evaluation(self):
+        review.select_feedback(self.folder, {})
+        path = Path(review.feedback_jobs(self.folder, "selection")[0]["directory"]) / "result.json"
+        result = json.loads(path.read_text())
+        result["feedback"]["access_mean_s"] = 0
+        review.save(path, result)
+        with self.assertRaises(ValueError):
+            review.feedback_jobs(self.folder, "evaluation")
+
+    def test_unmatched_demand_cannot_select_a_winner(self):
+        path = Path(review.feedback_jobs(self.folder, "selection")[0]["directory"]) / "result.json"
+        result = json.loads(path.read_text())
+        result["traffic"]["vehicle"]["demand_sha256"] = "different demand"
+        review.save(path, result)
+        with self.assertRaises(ValueError):
+            review.select_feedback(self.folder, {})
+        self.assertFalse((self.folder / "feedback_selection.json").exists())
+
+    def test_evaluation_uses_seed_blocks_and_never_drops_incomplete_pairs(self):
+        review.select_feedback(self.folder, {})
+        jobs = review.feedback_jobs(self.folder, "evaluation")
+        for job in jobs:
+            gap = {(11, .5): 2, (11, 2.): 4, (12, .5): 10, (12, 2.): 12}[job["seed"], job["scale"]]
+            journey = 200 if job["layout"] == "placement_000" else 200 - gap
+            self.record(job, 1, 1, 0, journey)
+        summary = review.summarize_feedback(self.folder, {})
+        for comparison in summary["comparisons"]:
+            self.assertEqual([b["mean_difference_s"] for b in comparison["blocks"]], [3, 11])
+            self.assertEqual(comparison["mean_difference_s"], 7)
+            np.testing.assert_allclose(comparison["conditional_t95_interval_s"],
+                                       [7 - 12.706204736 * 4, 7 + 12.706204736 * 4], rtol=1e-8)
+            self.assertEqual(comparison["verdict"], "undetermined")
+        failed = next(job for job in jobs if job["arm"] == "actuated" and job["layout"] == "placement_001")
+        self.record(failed, 0, 0, 0, 0, incomplete=True)
+        summary = review.summarize_feedback(self.folder, {})
+        comparison = next(c for c in summary["comparisons"] if c["arm"] == "actuated" and c["selection_rule"] == "access_wait")
+        self.assertIsNone(comparison["mean_difference_s"])
+        self.assertIsNone(comparison["conditional_t95_interval_s"])
+        self.assertEqual(comparison["verdict"], "incomplete_service")
+        self.assertEqual(len(comparison["blocks"]), 2)
+
+    def test_verdict_requires_the_whole_interval_to_clear_the_practical_margin(self):
+        review.select_feedback(self.folder, {})
+        jobs = review.feedback_jobs(self.folder, "evaluation")
+        for mean, spread, expected in [(6., .1, "feedback_benefit"), (-6., .1, "feedback_harm"),
+                                      (0., .01, "practically_negligible"), (1., .1, "undetermined")]:
+            with self.subTest(expected=expected):
+                for job in jobs:
+                    gap = mean + (-spread if job["seed"] == 11 else spread)
+                    self.record(job, 1, 1, 0, 200 if job["layout"] == "placement_000" else 200 - gap)
+                report = review.summarize_feedback(self.folder, {})
+                for comparison in report["comparisons"]:
+                    self.assertAlmostEqual(comparison["mean_difference_s"], mean)
+                    self.assertEqual(comparison["verdict"], expected)
+
+    def test_coincident_choices_report_identity_not_distinct_layout_equivalence(self):
+        for job in review.feedback_jobs(self.folder, "selection"):
+            if job["layout"] == "placement_000":
+                self.record(job, 0, 0, 0, 100)
+        review.select_feedback(self.folder, {})
+        for job in review.feedback_jobs(self.folder, "evaluation"):
+            self.record(job, 1, 1, 0, 200)
+        report = review.summarize_feedback(self.folder, {})
+        for comparison in report["comparisons"]:
+            self.assertTrue(comparison["identical_selection"])
+            self.assertEqual(comparison["access_layout"], comparison["feedback_layout"])
+            self.assertEqual(comparison["mean_difference_s"], 0)
+            self.assertEqual(comparison["conditional_t95_interval_s"], [0, 0])
+            self.assertEqual(comparison["verdict"], "practically_negligible")
+
+    def test_single_seed_distinguishes_exact_identity_from_unestimated_variance(self):
+        root = self.folder
+        metadata = json.loads(self.manifest.read_text())
+        metadata["feedback_protocol"]["evaluation_seeds"] = [11]
+        metadata["layouts"] = {"placement_000": {}, "placement_001": {}}
+        for identical in (False, True):
+            with self.subTest(identical=identical):
+                self.folder = root / str(identical)
+                self.manifest = self.folder / "manifest.json"
+                review.save(self.manifest, metadata)
+                for job in review.feedback_jobs(self.folder, "selection"):
+                    first = job["layout"] == "placement_000"
+                    self.record(job, 1 if first else 5, 20 if first else 30 if identical else 0, 0, 200)
+                review.select_feedback(self.folder, {})
+                jobs = review.feedback_jobs(self.folder, "evaluation")
+                for job in jobs:
+                    self.record(job, 1, 1, 0, 200)
+                report = review.summarize_feedback(self.folder, {})
+                for comparison in report["comparisons"]:
+                    self.assertEqual(comparison["identical_selection"], identical)
+                    self.assertEqual(comparison["conditional_t95_interval_s"], [0, 0] if identical else None)
+                    self.assertEqual(comparison["verdict"], "practically_negligible" if identical else "undetermined")
+                # Identity does not excuse an ineligible service outcome.
+                self.record(jobs[0], 1, 1, 0, 200, incomplete=True)
+                report = review.summarize_feedback(self.folder, {})
+                for comparison in report["comparisons"]:
+                    if comparison["arm"] == jobs[0]["arm"]:
+                        self.assertIsNone(comparison["conditional_t95_interval_s"])
+                        self.assertEqual(comparison["verdict"], "incomplete_service")
+
+    def test_no_approach_observations_do_not_become_a_perfect_access_score(self):
+        job = review.feedback_jobs(self.folder, "selection")[0]
+        self.record(job, None, None, 10, 100)
+        scores = review.feedback_scores(json.loads((Path(job["directory"]) / "result.json").read_text()))
+        self.assertEqual(scores["journey"], 110)
+        self.assertIsNone(scores["access"])
+        self.assertIsNone(scores["access_wait"])
+
+    def test_lane_entries_include_first_sample_without_recounting_stayers(self):
+        env = Mock(tl_ids=["intersection"], mb_ped_incoming_edges_all=[])
+        tracker = review.Telemetry(env, "fixed")
+        path = self.folder / "mechanism.jsonl"
+        with path.open("w") as trace, patch.object(review, "traci") as traci:
+            tracker.mechanism_file = trace
+            for name in ("getDepartedIDList", "getArrivedIDList", "getDepartedPersonIDList",
+                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollidingVehiclesIDList"):
+                getattr(traci.simulation, name).return_value = []
+            traci.person.getIDList.return_value = []
+            traci.vehicle.getWaitingTime.return_value = 0
+            traci.vehicle.getSpeed.return_value = 1
+            traci.trafficlight.getControlledLanes.return_value = ["lane"]
+            traci.trafficlight.getPhase.return_value = 0
+            traci.trafficlight.getRedYellowGreenState.return_value = "G"
+            traci.junction.getPosition.return_value = (0, 0)
+            traci.lane.getLength.return_value = 100
+            traci.lane.getShape.return_value = [(0, 0), (100, 0)]
+            for time, vehicles in enumerate([["a", "b"], ["b", "c"], [], ["a"]], 1):
+                traci.simulation.getTime.return_value = time
+                traci.vehicle.getIDList.return_value = vehicles
+                traci.lane.getLastStepVehicleIDs.return_value = vehicles
+                tracker.step()
+        steps = [json.loads(line) for line in path.read_text().splitlines()][1:]
+        self.assertEqual([step["lanes"]["lane"]["entered"] for step in steps], [2, 1, 0, 1])
+
+    def test_full_cohort_approach_wait_does_not_pollute_measurement_wait(self):
+        env = Mock(tl_ids=["intersection"], mb_ped_incoming_edges_all=["approach"])
+        tracker = review.Telemetry(env, "fixed")
+        tracker.feedback = True
+        with patch.object(review, "traci") as traci:
+            for name in ("getDepartedIDList", "getArrivedIDList", "getDepartedPersonIDList",
+                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollidingVehiclesIDList"):
+                getattr(traci.simulation, name).return_value = []
+            traci.vehicle.getIDList.return_value = []
+            traci.person.getIDList.return_value = ["p"]
+            for time, wait, edge, active in [(1, 1, "approach", False), (2, 2, "approach", False),
+                                             (3, 0, "approach", True), (4, 1, "approach", True),
+                                             (5, 2, "elsewhere", False)]:
+                traci.simulation.getTime.return_value = time
+                traci.person.getWaitingTime.return_value = wait
+                traci.person.getRoadID.return_value = edge
+                tracker.active = active
+                tracker.step()
+        self.assertEqual(tracker.approach_wait["p"], 3)
+        self.assertEqual(tracker.wait["pedestrian"], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

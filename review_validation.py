@@ -8,6 +8,8 @@ departure cohort and drains it after measurement. No policy training occurs.
 Placement-matched baselines (Uniform and best-of-20 random search) keep the
 reference layout's crossing count and west-to-east widths and vary placement
 only; random search selects on training-window trials under actuated control.
+The feedback comparison uses an explicit matched placement grid, three design
+selection scores, equal-class full-journey evaluation and a frozen selection.
 """
 import argparse
 from collections import Counter
@@ -21,6 +23,7 @@ import os
 from pathlib import Path
 import random
 import statistics
+import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -29,6 +32,9 @@ import numpy as np
 import torch
 import traci
 from torch_geometric.data import Batch
+from scipy.stats import t as student_t
+
+from config import classify_and_return_args, get_config
 
 from ppo.ppo import PPO
 from ppo.models import MLP_ActorCritic
@@ -447,6 +453,298 @@ def prepare(destination, training_artifact=None):
     print(json.dumps({k: manifest[k] for k in ["evaluation_proposals", "training_sample_merged_counts_1000_draws"] if k in manifest}, indent=2))
 
 
+def prepare_feedback(destination, protocol_path):
+    """Freeze an explicit placement grid and non-learning comparison; no historical weights."""
+    destination = Path(destination).resolve()
+    protocol = json.loads(Path(protocol_path).read_text())
+    config = get_config()
+    config.update(gui=False, gpu=False, evaluate=False, save_graph_images=False, save_gmm_plots=False)
+    d, ctrl, higher, lower, _ = classify_and_return_args(config, "cpu")
+    placements = [np.asarray(p, dtype=np.float32) for p in protocol["placements"]]
+    if len(placements) < 2:
+        raise ValueError("Declare at least two candidate placements.")
+    for proposals in placements:
+        if (proposals.ndim != 2 or proposals.shape[1] != 2 or
+                not 1 <= len(proposals) <= d["max_proposals"] or
+                not np.isfinite(proposals).all() or np.any((proposals[:, 1] < 0) | (proposals[:, 1] > 1))):
+            raise ValueError("Placements must contain finite normalized location/width pairs.")
+        check_matched(proposals, placements[0][:, 1])
+    for key in ("selection_scales", "evaluation_scales"):
+        values = protocol[key]
+        if not values or len(set(values)) != len(values) or any(not np.isfinite(x) or x <= 0 for x in values):
+            raise ValueError(f"{key} must contain distinct positive scales.")
+    for key in ("selection_seeds", "evaluation_seeds"):
+        values = protocol[key]
+        if not values or len(set(values)) != len(values) or any(not isinstance(x, int) or x < 0 for x in values):
+            raise ValueError(f"{key} must contain distinct nonnegative integer seeds.")
+    if set(protocol["selection_seeds"]) & set(protocol["evaluation_seeds"]):
+        raise ValueError("Use different random seeds for selection and evaluation.")
+    timings = protocol["timings"]
+    if not timings or any(len(p) != 2 or any(not np.isfinite(x) or x <= 0 for x in p) for p in timings):
+        raise ValueError("Declare positive intersection/mid-block green-duration pairs.")
+    if not np.isfinite(protocol["practical_margin_s"]) or protocol["practical_margin_s"] <= 0:
+        raise ValueError("Declare a positive practical performance margin in seconds.")
+    destination.mkdir(parents=True, exist_ok=False)
+    sources = ("config.py", "review_validation.py", "utils.py", "uv.lock", "ppo/models.py", "ppo/ppo.py",
+               "ppo/ppo_utils.py", "simulation/control_env.py", "simulation/design_env.py",
+               "simulation/worker.py", "simulation/env_utils.py", "simulation/sim_setup.py")
+    source_hashes = {}
+    for name in sources:
+        target = destination / "source_snapshot" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+        source_hashes[name] = digest(target)
+    for settings, key in ((d, "original_net_file"), (ctrl, "vehicle_input_trips"), (ctrl, "pedestrian_input_trips")):
+        source = (ROOT / settings[key]).resolve()
+        target = destination / "source_snapshot" / "simulation" / source.name
+        shutil.copy2(source, target)
+        settings[key] = str(target)
+        source_hashes[str(target)] = digest(target)
+    ctrl.update(vehicle_output_trips=str(destination / "vehicles.xml"),
+                pedestrian_output_trips=str(destination / "pedestrians.xml"))
+    d["save_dir"] = higher["model_kwargs"]["run_dir"] = str(destination / "geometry")
+    torch.set_num_threads(1)
+    torch.manual_seed(GEOMETRY_SEED)
+    env = DesignEnv(d, ctrl, lower, d["save_dir"])
+    env.reset()
+    layouts = {}
+    for index, proposals in enumerate(placements):
+        name = f"placement_{index:03d}"
+        env._apply_action(proposals, name)
+        network = str(Path(env.current_net_file_path).resolve())
+        layouts[name] = {"network": network, "sha256": digest(network), "iteration": name,
+                         "num_proposals": len(proposals), "real_world": False,
+                         "extreme_edges": copy.deepcopy(env.extreme_edge_dict),
+                         "crossing_ids": list(env.crossing_ids), "signal_slots": dict(env.signal_slots),
+                         "proposals": physical_proposals(proposals, env.normalizer_x, d)}
+    manifest = {"feedback_protocol": protocol, "checkpoint": None, "checkpoint_sha256": None,
+                "observation_version": MLP_ActorCritic.observation_version,
+                "active_arms": ["tuned_fixed", "actuated"],
+                "learned_control_skip_reason": "This comparison uses non-learning controllers.",
+                "warmup_control": "fixed", "journey_protocol": JOURNEY_PROTOCOL,
+                "configuration": dict(design_args=d, control_args=ctrl, higher_ppo_args=higher, lower_ppo_args=lower),
+                "source_hashes": source_hashes, "layouts": layouts,
+                "normalizer_x": env.normalizer_x, "normalizer_y": env.normalizer_y,
+                "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "criterion": "Mean pedestrian scheduled-departure-to-arrival journey time plus mean vehicle "
+                             "time loss and insertion delay; equal weight per class, not per traveler.",
+                "eligibility": "Every selection cohort must fully complete without teleports or collisions; "
+                               "undefined score components are not zero. All failed outcomes remain recorded.",
+                "selection": "Tune fixed-time parameters for each layout using the common journey criterion, "
+                             "then compare access-only, access-plus-approach-wait and vehicle-inclusive layout "
+                             "selection scores on the same candidate trials. "
+                             "Average per-trial scores uniformly over the declared scale-by-seed grid. "
+                             "This ablates layout-ranking scores, not all operational information: fixed-time "
+                             "tuning uses journey outcomes in every rule. Access is a simulated first-approach "
+                             "age, not a geometric or controller-independent distance. "
+                             "Actuation uses the existing common request/gap procedure. Ties keep declared candidate order.",
+                "scope": "Within-recording exploratory/mechanistic comparison. Training window [0,2400); "
+                         "evaluation window [2400,3600) has been inspected in prior studies. New seeds are "
+                         "new simulation draws, not new observed data."}
+    save(destination / "manifest.json", manifest)
+    return destination / "manifest.json"
+
+
+def feedback_scores(result):
+    """Common full-journey criterion and information ablations; never score incomplete service as success."""
+    cohort = result["journeys"]["cohort"]
+    traffic = cohort["traffic"]
+    if cohort["teleports"] or cohort["collisions"] or not all(x["all_completed"] for x in traffic.values()):
+        return None
+    pedestrian = traffic["pedestrian"]["journey_mean_s"]
+    vehicle = traffic["vehicle"]["time_loss_plus_insertion_delay_mean_s"]
+    if pedestrian is None or vehicle is None:
+        return None
+    access = result["feedback"]["access_mean_s"]
+    wait = result["feedback"]["approach_wait_mean_s"]
+    scores = {"journey": pedestrian + vehicle, "access": access,
+              "access_wait": access + wait if access is not None and wait is not None else None,
+              "access_wait_vehicle": access + wait + vehicle if access is not None and wait is not None else None}
+    if any(value is not None and not np.isfinite(value) for value in scores.values()):
+        return None
+    return scores
+
+
+def feedback_jobs(directory, stage):
+    directory = Path(directory).resolve()
+    manifest = directory / "manifest.json"
+    metadata = json.loads(manifest.read_text())
+    protocol = metadata["feedback_protocol"]
+    variants = []
+    if stage == "selection":
+        for layout in metadata["layouts"]:
+            variants.append((layout, "actuated", None, "actuated"))
+            variants.extend((layout, "tuned_fixed", parameters, f"timing_{i:03d}")
+                            for i, parameters in enumerate(protocol["timings"]))
+    elif stage == "evaluation":
+        selection = json.loads((directory / "feedback_selection.json").read_text())
+        if selection["manifest_sha256"] != digest(manifest):
+            raise ValueError("Frozen feedback selection does not match the manifest.")
+        for path, expected in selection["result_sha256s"].items():
+            if digest(path) != expected:
+                raise ValueError("A selection result changed after choices were frozen.")
+        for arm, choices in selection["choices"].items():
+            if any(choice is None for choice in choices.values()):
+                raise RuntimeError("A declared selection rule has no eligible layout; evaluation is not released.")
+            for layout in dict.fromkeys(choices.values()):
+                parameters = selection["timings"][layout] if arm == "tuned_fixed" else None
+                variants.append((layout, arm, parameters, arm))
+    else:
+        raise ValueError("Feedback stage must be selection or evaluation.")
+    jobs = []
+    for layout, arm, parameters, label in variants:
+        for scale in protocol[stage + "_scales"]:
+            for seed in protocol[stage + "_seeds"]:
+                job = dict(manifest=str(manifest), layout=layout, arm=arm, scale=scale, seed=seed,
+                           split="training" if stage == "selection" else "evaluation",
+                           directory=str(directory / stage / f"{layout}_{label}_{scale}_{seed}"))
+                if parameters is not None:
+                    job["parameters"] = parameters
+                jobs.append(job)
+    return jobs
+
+
+def feedback_results(jobs, failures):
+    """Read complete declared trials, preserving failure rows and checking paired demand and provenance."""
+    manifest_sha256 = digest(jobs[0]["manifest"])
+    records, demands = [], {}
+    for job in jobs:
+        path = Path(job["directory"]) / "result.json"
+        row = {"job": job, "scores": None}
+        if job["directory"] in failures:
+            row["error"] = failures[job["directory"]]
+        elif not path.exists():
+            row["error"] = "missing result"
+        else:
+            result = json.loads(path.read_text())
+            if result["job"] != job or result["manifest_sha256"] != manifest_sha256:
+                raise ValueError(f"Trial provenance does not match the declared comparison: {path}")
+            demand = {kind: value["demand_sha256"] for kind, value in result["traffic"].items()}
+            key = job["scale"], job["seed"]
+            if demands.setdefault(key, demand) != demand:
+                raise ValueError("Demand differs between paired layout/controller trials.")
+            cohort = result["journeys"]["cohort"]
+            row.update(scores=feedback_scores(result), result=str(path), sha256=digest(path),
+                       censored={kind: value["censored"] for kind, value in cohort["traffic"].items()},
+                       simulation_s=cohort["simulation_end_s"], warmup_s=result["warmup_s"],
+                       measurement_s=result["measurement_s"], drain_s=cohort["drain_s"],
+                       elapsed_s=result["elapsed_s"],
+                       scheduled={kind: value["scheduled"] for kind, value in cohort["traffic"].items()},
+                       teleports=len(cohort["teleports"]), collisions=len(cohort["collisions"]))
+        records.append(row)
+    return records
+
+
+def select_feedback(directory, failures):
+    directory = Path(directory).resolve()
+    path = directory / "feedback_selection.json"
+    if path.exists():
+        raise FileExistsError("Feedback choices are frozen. Use a fresh study directory.")
+    manifest = directory / "manifest.json"
+    metadata = json.loads(manifest.read_text())
+    records = feedback_results(feedback_jobs(directory, "selection"), failures)
+    rules = ("access", "access_wait", "access_wait_vehicle")
+    choices = {arm: {} for arm in metadata["active_arms"]}
+    candidates, timings = [], {}
+    for layout in metadata["layouts"]:
+        for arm in metadata["active_arms"]:
+            variants = []
+            for parameters in (metadata["feedback_protocol"]["timings"] if arm == "tuned_fixed" else [None]):
+                rows = [r for r in records if r["job"]["layout"] == layout and r["job"]["arm"] == arm
+                        and r["job"].get("parameters") == parameters]
+                valid = all(r["scores"] is not None for r in rows)
+                variants.append({"parameters": parameters, "journey": statistics.mean(r["scores"]["journey"] for r in rows)
+                                 if valid else None, "rows": rows})
+            eligible = [v for v in variants if v["journey"] is not None]
+            best = min(eligible, key=lambda v: v["journey"]) if eligible else None
+            if arm == "tuned_fixed":
+                timings[layout] = best["parameters"] if best else None
+            scores = {}
+            for rule in rules:
+                scores[rule] = (statistics.mean(r["scores"][rule] for r in best["rows"])
+                                if best and all(r["scores"][rule] is not None for r in best["rows"]) else None)
+            candidates.append({"layout": layout, "arm": arm, "parameters": best["parameters"] if best else None,
+                               "scores": scores, "timing_trials": variants})
+    for arm in choices:
+        for rule in rules:
+            eligible = [c for c in candidates if c["arm"] == arm and c["scores"][rule] is not None]
+            choices[arm][rule] = min(eligible, key=lambda c: c["scores"][rule])["layout"] if eligible else None
+    selection = {"manifest_sha256": digest(manifest), "choices": choices, "timings": timings, "candidates": candidates,
+                 "result_sha256s": {r["result"]: r["sha256"] for r in records if "result" in r},
+                 "budget": {"declared_trials": len(records), "returned_trials": sum("result" in r for r in records),
+                            "returned_trial_simulation_s": sum(r["simulation_s"] for r in records if "result" in r),
+                            "scope": "Count each shared candidate/timing trial once, not once per selection score. "
+                                     "Failed execution may consume additional unaccounted simulation; retain its logs."},
+                 "complete": all(layout is not None for arm in choices.values() for layout in arm.values())}
+    save(path, selection)
+    if not selection["complete"]:
+        raise RuntimeError("No eligible layout for at least one declared rule; all outcomes are retained.")
+    return selection
+
+
+def summarize_feedback(directory, failures):
+    directory = Path(directory).resolve()
+    metadata = json.loads((directory / "manifest.json").read_text())
+    selection_path = directory / "feedback_selection.json"
+    selection = json.loads(selection_path.read_text())
+    protocol = metadata["feedback_protocol"]
+    records = feedback_results(feedback_jobs(directory, "evaluation"), failures)
+    lookup = {(r["job"]["arm"], r["job"]["layout"], r["job"]["scale"], r["job"]["seed"]): r for r in records}
+    comparisons = []
+    for arm, choices in selection["choices"].items():
+        for rule in ("access_wait", "access_wait_vehicle"):
+            blocks = []
+            for seed in protocol["evaluation_seeds"]:
+                differences = []
+                for scale in protocol["evaluation_scales"]:
+                    baseline = lookup[arm, choices["access"], scale, seed]["scores"]
+                    feedback = lookup[arm, choices[rule], scale, seed]["scores"]
+                    differences.append(baseline["journey"] - feedback["journey"]
+                                       if baseline is not None and feedback is not None else None)
+                blocks.append({"seed": seed, "differences_by_scale_s": differences,
+                               "mean_difference_s": statistics.mean(differences) if all(x is not None for x in differences) else None})
+            values = [b["mean_difference_s"] for b in blocks]
+            complete = all(v is not None for v in values)
+            mean = statistics.mean(values) if complete else None
+            interval = None
+            if complete and choices["access"] == choices[rule]:
+                interval = [0.0, 0.0]
+            elif complete and len(values) >= 2:
+                half = float(student_t.ppf(.975, len(values) - 1)) * statistics.stdev(values) / len(values) ** .5
+                interval = [mean - half, mean + half]
+            verdict = "incomplete_service" if not complete else "undetermined"
+            if interval is not None:
+                margin = protocol["practical_margin_s"]
+                if interval[0] > margin:
+                    verdict = "feedback_benefit"
+                elif interval[1] < -margin:
+                    verdict = "feedback_harm"
+                elif interval[0] >= -margin and interval[1] <= margin:
+                    verdict = "practically_negligible"
+            comparisons.append({"arm": arm, "selection_rule": rule, "blocks": blocks,
+                                "access_layout": choices["access"], "feedback_layout": choices[rule],
+                                "identical_selection": choices["access"] == choices[rule],
+                                "mean_difference_s": mean, "conditional_t95_interval_s": interval, "verdict": verdict})
+    summary = {"manifest_sha256": digest(directory / "manifest.json"), "selection_sha256": digest(selection_path),
+               "criterion": metadata["criterion"], "scope": metadata["scope"], "trials": records,
+               "comparisons": comparisons,
+               "budget": {"selection": selection["budget"],
+                          "evaluation": {"declared_trials": len(records), "returned_trials": sum("result" in r for r in records),
+                                         "returned_trial_simulation_s": sum(r["simulation_s"] for r in records if "result" in r)},
+                          "scope": "Identical selected layout/controller cases are evaluated once and reused across "
+                                   "score comparisons. Returned trials include ineligible outcomes; failed execution "
+                                   "may consume additional unaccounted simulation."},
+               "uncertainty": "Positive differences favor feedback. Average over the fixed scale grid within each "
+                              "evaluation-seed block, then use a Student t interval across independent seed blocks. "
+                              "Conditional on this recording and frozen selections, with approximate small-sample "
+                              "coverage; not selection-algorithm uncertainty. No incomplete or failed pair is dropped. "
+                              "Verdicts are per comparison, not a simultaneous claim across all comparisons. "
+                              "Identical selections have zero difference by construction when service is eligible; "
+                              "this says nothing about selection stability or information value on other candidate sets."}
+    save(directory / "feedback_results.json", summary)
+    return summary
+
+
 class Telemetry(traci.StepListener):
     def __init__(self, env, arm):
         self.env, self.arm = env, arm
@@ -462,6 +760,11 @@ class Telemetry(traci.StepListener):
         self.teleports, self.collisions = [], []
         self.mb_phase = {}
         self.phase_started = {}
+        self.feedback = False
+        self.approach_wait = {}
+        self.mechanism_file = None
+        self.mechanism_lanes = {}
+        self.previous_lane_vehicles = {}
 
     def step(self, unused=0):
         now = traci.simulation.getTime()
@@ -476,14 +779,17 @@ class Telemetry(traci.StepListener):
             for identifier in ids:
                 value = domain.getWaitingTime(identifier)
                 previous = self.prev_wait[kind].get(identifier, 0.0)
+                increment = value-previous if value >= previous else value
                 if self.active:
-                    self.wait[kind] += value-previous if value >= previous else value
+                    self.wait[kind] += increment
                 self.prev_wait[kind][identifier] = value
                 if kind == "pedestrian":
                     self.departures.setdefault(identifier, now)
                     edge = domain.getRoadID(identifier)
                     if edge in self.env.mb_ped_incoming_edges_all:
                         self.first_approach.setdefault(identifier, now-self.departures[identifier])
+                        if self.feedback:
+                            self.approach_wait[identifier] = self.approach_wait.get(identifier, 0.0) + increment
         self.teleports.extend({"time": now, "id": x} for x in traci.simulation.getStartingTeleportIDList())
         self.collisions.extend({"time": now, "id": x} for x in traci.simulation.getCollidingVehiclesIDList())
         if self.controller_active and self.arm == "actuated":
@@ -500,6 +806,31 @@ class Telemetry(traci.StepListener):
                                   for p in traci.person.getIDList())
                     if request:
                         traci.trafficlight.setPhase(tid, 1)
+        if self.mechanism_file is not None:
+            if not self.mechanism_lanes:
+                lanes = sorted({lane for tid in self.env.tl_ids for lane in traci.trafficlight.getControlledLanes(tid)})
+                self.mechanism_lanes = {lane: traci.lane.getLength(lane) for lane in lanes}
+                self.mechanism_file.write(json.dumps({
+                    "type": "geometry",
+                    "signals": {tid: traci.junction.getPosition(tid) for tid in self.env.tl_ids},
+                    "lanes": {lane: {"length_m": length, "shape": traci.lane.getShape(lane)}
+                              for lane, length in self.mechanism_lanes.items()}}) + "\n")
+            queues = {}
+            for lane, length in self.mechanism_lanes.items():
+                vehicles = set(traci.lane.getLastStepVehicleIDs(lane))
+                stopped = [v for v in vehicles if traci.vehicle.getSpeed(v) < .1]
+                rear = min((traci.vehicle.getLanePosition(v) - traci.vehicle.getLength(v) for v in stopped),
+                           default=length)
+                previous = self.previous_lane_vehicles.get(lane)
+                queues[lane] = {"stopped": len(stopped), "queue_extent_m": max(0., length - rear),
+                                "entered": len(vehicles) if previous is None else len(vehicles - previous)}
+                self.previous_lane_vehicles[lane] = vehicles
+            self.mechanism_file.write(json.dumps({
+                "type": "step", "time_s": now,
+                "stage": "measurement" if self.active else "drain" if self.controller_active else "warmup",
+                "signals": {tid: {"phase": traci.trafficlight.getPhase(tid),
+                                  "state": traci.trafficlight.getRedYellowGreenState(tid)} for tid in self.env.tl_ids},
+                "lanes": queues}) + "\n")
         return True
 
 
@@ -538,7 +869,7 @@ def trial(job):
     for name, expected in m["source_hashes"].items():
         if digest(ROOT / name) != expected:
             raise ValueError(f"Source changed since prepare: {name}. Use a fresh study directory.")
-    if digest(m["checkpoint"]) != m["checkpoint_sha256"]:
+    if m.get("checkpoint") is not None and digest(m["checkpoint"]) != m["checkpoint_sha256"]:
         raise ValueError("Checkpoint changed since prepare. Use a fresh study directory.")
     if m.get("observation_version") != MLP_ActorCritic.observation_version:
         raise ValueError("Use prepare in a fresh directory for the current observation protocol.")
@@ -605,6 +936,7 @@ def trial(job):
         normalizer.eval()
     env = ControlEnv(ctrl, str(folder), worker_id=0, network_iteration=layout["iteration"], current_net_file_path=str(net))
     tracker = Telemetry(env, job["arm"])
+    tracker.feedback = "feedback_protocol" in m
     cohort = {}
     original_start = traci.start
     def instrumented_start(command, *args, **kwargs):
@@ -621,6 +953,8 @@ def trial(job):
     traci.start = instrumented_start
     started = time.monotonic()
     try:
+        if tracker.feedback:
+            tracker.mechanism_file = (folder / "mechanism.jsonl").open("w")
         with (folder / "stdout.log").open("w") as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             state, _ = env.reset(layout["extreme_edges"], layout["num_proposals"], tl=warmup_control == "fixed",
                                  real_world=layout["real_world"], eval_mode=job["split"] == "evaluation",
@@ -693,6 +1027,8 @@ def trial(job):
             traci.switch(env.traci_label)
             traci.close()  # Wait for SUMO to finish writing complete and unfinished trip records.
             env.sumo_running = False
+        if tracker.mechanism_file is not None:
+            tracker.mechanism_file.close()
     tripinfo = ET.parse(folder / "tripinfo.xml").getroot()
     journeys = {"scope": "Full simulation including warmup; duration summaries use completed journeys.",
                 "tripinfo_sha256": digest(folder / "tripinfo.xml")}
@@ -727,6 +1063,17 @@ def trial(job):
             "drain_s": simulation_end - end_time,
             "stop_reason": "cohort_complete" if all(s["all_completed"] for s in summaries.values()) else "drain_cap",
             "traffic": summaries, "teleports": tracker.teleports, "collisions": tracker.collisions}
+    if tracker.feedback:
+        approaches = env.pedestrian_arrival_times
+        result["feedback"] = {
+            "access_mean_s": statistics.mean(approaches.values()) if approaches else None,
+            "approach_wait_mean_s": sum(tracker.approach_wait.values()) / len(approaches) if approaches else None,
+            "approach_n": len(approaches), "approach_ids": sorted(approaches),
+            "scope": "Full cohort, including warmup and drain. Access is first recorded mid-block approach age "
+                     "since insertion, not a geometric or controller-independent distance; approach wait is "
+                     "accumulated stopped time on the declared mid-block pedestrian approach edges per recorded "
+                     "approach pedestrian, not all journey waiting. The approach cohort may differ by layout.",
+            "mechanism_sha256": digest(folder / "mechanism.jsonl")}
     save(result_path, result)
     return str(result_path)
 
@@ -752,18 +1099,36 @@ def run_jobs(jobs, fail_fast=True):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["prepare", "smoke", "tune", "search", "matrix"],
-                        help="prepare: freeze a study manifest; smoke: one held-out seed; tune: fixed-time greens on training trials; "
-                             "search: count/width-matched Uniform and best-of-20 random placements selected on training trials; "
-                             "matrix: held-out rows, including baseline layouts once searched")
+    parser.add_argument("operation", choices=["prepare", "smoke", "tune", "search", "matrix",
+                                              "feedback-prepare", "feedback-select", "feedback-evaluate"],
+                        help="prepare/smoke/tune/search/matrix: existing review comparisons; "
+                             "feedback-prepare: freeze a declared placement protocol without checkpoints; "
+                             "feedback-select: tune controls and freeze the three layout choices on training data; "
+                             "feedback-evaluate: evaluate those frozen choices and report paired seed-block differences")
     parser.add_argument("directory", type=Path)
     parser.add_argument("--training-artifact", type=Path,
                         help="prepare only: completed study/<seed>/<arm>/training.json; reuse its final layout for common-actuated placement baselines")
+    parser.add_argument("--protocol", type=Path,
+                        help="feedback-prepare only: JSON placements, timings, selection/evaluation scales and seeds, practical_margin_s")
     args = parser.parse_args()
     if args.training_artifact is not None and args.operation != "prepare":
         parser.error("--training-artifact is only valid with prepare")
+    if (args.protocol is not None) != (args.operation == "feedback-prepare"):
+        parser.error("--protocol is required only with feedback-prepare")
     os.chdir(ROOT)
     directory = args.directory.resolve()
+    if args.operation == "feedback-prepare":
+        print(prepare_feedback(directory, args.protocol))
+        return
+    if args.operation in ("feedback-select", "feedback-evaluate"):
+        if args.operation == "feedback-select" and (directory / "feedback_selection.json").exists():
+            raise FileExistsError("Feedback choices are frozen. Use a fresh study directory.")
+        stage = "selection" if args.operation == "feedback-select" else "evaluation"
+        jobs = feedback_jobs(directory, stage)
+        failures = run_jobs(jobs, fail_fast=False)
+        report = select_feedback(directory, failures) if stage == "selection" else summarize_feedback(directory, failures)
+        print(json.dumps(report["choices"] if stage == "selection" else report["comparisons"], indent=2))
+        return
     if args.operation == "prepare":
         prepare(directory, args.training_artifact)
         return

@@ -143,6 +143,44 @@ uv run python review_validation.py matrix runs/matched_baselines/14100
 
 This path uses common actuated control for the original, recorded final, Uniform, and best-of-20 random layouts. Only placement varies: crossing count and west-to-east widths match the recorded final layout. `search` runs all 120 training-window selection trials (20 candidates, two scales, three seeds), retains failures, and freezes selection before `matrix` evaluates the study's declared held-out demand. Training provenance is preserved separately from the frozen evaluator sources and inputs. These rows are separate from learned-policy evaluation and random-layout controller training.
 
+#### Bounded operational-feedback comparison
+
+`review_validation.py` also compares an explicit placement grid under tuned fixed-time and common actuated control, without historical checkpoints or policy training. Candidate layouts must have the same crossing count and west-to-east normalized widths; normalized locations must be ordered, within `[0.01, 0.99]`, and at least `0.08` apart. Physical proposals and generated networks are recorded in the manifest.
+
+Declare a JSON protocol before running. This small example is an execution smoke, not a research-scale protocol or a scientifically justified one-second practical margin:
+
+```json
+{
+  "placements": [[[0.25, 0.5], [0.75, 0.5]], [[0.35, 0.5], [0.65, 0.5]]],
+  "selection_scales": [0.25],
+  "evaluation_scales": [0.25],
+  "selection_seeds": [70101, 70102],
+  "evaluation_seeds": [70111, 70112],
+  "timings": [[15, 10], [30, 20]],
+  "practical_margin_s": 1.0
+}
+```
+
+Save it as `protocol.json`, then use a fresh output directory:
+
+```bash
+uv run --frozen python review_validation.py feedback-prepare runs/feedback_comparison --protocol protocol.json
+uv run --frozen python review_validation.py feedback-select runs/feedback_comparison
+uv run --frozen python review_validation.py feedback-evaluate runs/feedback_comparison
+```
+
+Each timing pair specifies intersection and mid-block vehicle-green durations in seconds. For each placement, fixed-time tuning minimizes **mean pedestrian complete journey time plus mean vehicle time loss and insertion delay**, equally weighting the two class means. All rules share those tuned parameters and candidate trials. The three layout-ranking scores use first-approach age, first-approach age plus stopped time on crossing approaches, and those two terms plus vehicle delay. These are score ablations, not procedures wholly isolated from operational information: tuning uses journey outcomes, simulated approach age can depend on control, and the approach cohort can differ by layout.
+
+Selection uniformly averages per-trial scores over the declared scale-by-seed grid; it does not pool travelers across trials.
+
+Trials use 100 s fixed-control warmup, 450 s measurement, then at most 1800 s continued service without later departures. The complete cohort includes warmup trips; journey time begins at scheduled departure. A candidate timing must complete every selection cohort without teleports or collisions. Missing approach observations are undefined, not zero; failures remain in `feedback_selection.json`, and no eligible choice blocks evaluation rather than manufacturing a winner.
+
+Selection uses the original recording's `[0, 2400)` window; evaluation uses `[2400, 3600)` with distinct declared seeds. That evaluation window has already been inspected in earlier studies: this is within-recording exploratory/mechanistic evidence, not a fresh dataset. Source/input/network hashes and selection-result hashes guard reuse. `feedback-select` cannot overwrite frozen choices. `feedback_results.json` retains every declared evaluation, simulation accounting, and paired differences in the common journey criterion. Scales are averaged within each evaluation-seed block before computing a conditional Student-t interval across blocks; incomplete pairs are never dropped. Benefit, harm, and practical equivalence use the declared margin and the whole interval. These are per-comparison, not simultaneous, statements conditional on the recording and selected layouts.
+
+Each comparison identifies both selected layouts and flags `identical_selection`. When both rules select the same layout/controller procedure and service is eligible, their contrast is exactly zero by construction. This is not evidence of selection stability or of feedback being unnecessary on other candidate sets.
+
+Each trial retains raw demand, `tripinfo.xml`, simulator logs and `mechanism.jsonl`. Mechanism records cover every warmup, measurement and drain second: signal phases/states, lane membership arrivals, stopped-vehicle counts and distance from the stop line to the farthest stopped vehicle's rear. The latter is a queue-extent proxy, not a verified contiguous queue or a spillback diagnosis; lane membership arrivals include lane changes. Geometry and lane shapes support subsequent mechanism analysis without claiming causal explanations automatically.
+
 ### 📝 Code Structure
 
 ```text
