@@ -64,7 +64,7 @@ def require_exposed_heads(provenance, signal_slots):
 
 
 def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, norm_y, save_path,
-                head_decisions, head_updates):
+                head_decisions, head_updates, signal_control_protocol=None):
     """
     Save versioned policies with the controller's Welford statistics and literal per-head exposure.
     """
@@ -78,6 +78,7 @@ def save_policy(higher_policy, lower_policy, lower_state_normalizer, norm_x, nor
     'lower': {
         'observation_version': lower_policy.observation_version,
         'provenance': {'slot_protocol': SLOT_PROTOCOL, 'permutation_augmentation': False,
+                       'signal_control_protocol': signal_control_protocol,
                        'head_decisions': [int(n) for n in head_decisions],
                        'head_updates': [int(n) for n in head_updates]},
         'state_dict': lower_policy.state_dict(),  
@@ -97,7 +98,7 @@ def load_design_policy(higher_policy, higher_checkpoint):
     return higher_checkpoint['norm_x'], higher_checkpoint['norm_y']
 
 
-def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
+def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path, signal_control_protocol=None):
     """
     Load policy state dict and welford normalizer stats; return design normalizers and controller provenance.
     """
@@ -107,6 +108,9 @@ def load_policy(higher_policy, lower_policy, lower_state_normalizer, load_path):
             'Checkpoint observation packing and Welford statistics are incompatible with '
             'this controller. Use fresh training or the historical checkout.'
         )
+    saved_protocol = (checkpoint['lower'].get('provenance') or {}).get('signal_control_protocol')
+    if saved_protocol != signal_control_protocol:
+        raise ValueError('Checkpoint signal-control protocol differs from the requested executor.')
     norm_x, norm_y = load_design_policy(higher_policy, checkpoint['higher'])
     lower_policy.load_state_dict(checkpoint['lower']['state_dict'])
     lower_state_normalizer.manual_load(
@@ -331,6 +335,10 @@ def scale_demand_sliced_window(input_file, output_file, scale_factor, demand_typ
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(pretty)
+    return {"source_partition_s": [START_SPAN, END_SPAN],
+            "source_window_s": [t_start, t_end], "output_horizon_s": window_size,
+            "scale_factor": scale_factor, "source_trips": len(windowed),
+            "realized_trips": len(scaled)}
 
 def get_averages(result_json_path, total=False):
     """

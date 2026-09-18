@@ -22,6 +22,7 @@ import multiprocessing as mp
 import os
 from pathlib import Path
 import random
+import re
 import statistics
 import shutil
 import subprocess
@@ -41,6 +42,7 @@ from ppo.models import MLP_ActorCritic
 from ppo.ppo_utils import WelfordNormalizer
 from simulation.control_env import ControlEnv
 from simulation.design_env import DesignEnv
+from simulation.signal_control import PROTOCOL as SHARED_SIGNAL_PROTOCOL, CoordinatedSchedule, LocalActuated, coordinated_grid
 from utils import load_design_policy, require_exposed_heads, signal_slots_from_network
 
 ROOT = Path(__file__).resolve().parent
@@ -528,8 +530,9 @@ def prepare_feedback(destination, protocol_path):
                 "code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "criterion": "Mean pedestrian scheduled-departure-to-arrival journey time plus mean vehicle "
                              "time loss and insertion delay; equal weight per class, not per traveler.",
-                "eligibility": "Every selection cohort must fully complete without teleports or collisions; "
-                               "undefined score components are not zero. All failed outcomes remain recorded.",
+                "eligibility": "Every selection cohort must fully complete without teleports or collisions "
+                               "other than person-person overlaps, which remain diagnostic. "
+                               "Undefined score components are not zero. All failed outcomes remain recorded.",
                 "selection": "Tune fixed-time parameters for each layout using the common journey criterion, "
                              "then compare access-only, access-plus-approach-wait and vehicle-inclusive layout "
                              "selection scores on the same candidate trials. "
@@ -549,7 +552,8 @@ def feedback_scores(result):
     """Common full-journey criterion and information ablations; never score incomplete service as success."""
     cohort = result["journeys"]["cohort"]
     traffic = cohort["traffic"]
-    if cohort["teleports"] or cohort["collisions"] or not all(x["all_completed"] for x in traffic.values()):
+    serious_collision = any(event.get("type") != "person-person" for event in cohort["collisions"])
+    if cohort["teleports"] or serious_collision or not all(x["all_completed"] for x in traffic.values()):
         return None
     pedestrian = traffic["pedestrian"]["journey_mean_s"]
     vehicle = traffic["vehicle"]["time_loss_plus_insertion_delay_mean_s"]
@@ -745,6 +749,22 @@ def summarize_feedback(directory, failures):
     return summary
 
 
+def _person_collision_events(log_path):
+    """Read person-person overlaps that SUMO warns about but does not register in TraCI."""
+    pattern = re.compile(
+        r"^Warning: Collision of person '(.*?)' and person '(.*?)', "
+        r"lane='(.*?)', time=(\d+(?:\.\d+)?)\.\s*$")
+    events = []
+    with Path(log_path).open() as log:
+        for line in log:
+            match = pattern.match(line)
+            if match:
+                collider, victim, lane, time_s = match.groups()
+                events.append(dict(time=float(time_s), collider=collider, victim=victim,
+                                   type="person-person", lane=lane))
+    return events
+
+
 class Telemetry(traci.StepListener):
     def __init__(self, env, arm):
         self.env, self.arm = env, arm
@@ -791,7 +811,9 @@ class Telemetry(traci.StepListener):
                         if self.feedback:
                             self.approach_wait[identifier] = self.approach_wait.get(identifier, 0.0) + increment
         self.teleports.extend({"time": now, "id": x} for x in traci.simulation.getStartingTeleportIDList())
-        self.collisions.extend({"time": now, "id": x} for x in traci.simulation.getCollidingVehiclesIDList())
+        self.collisions.extend(dict(time=now, collider=event.collider, victim=event.victim,
+                                    type=event.type, lane=event.lane)
+                               for event in traci.simulation.getCollisions())
         if self.controller_active and self.arm == "actuated":
             for tid in self.env.tl_ids[1:]:
                 phase = traci.trafficlight.getPhase(tid)
@@ -835,8 +857,12 @@ class Telemetry(traci.StepListener):
 
 
 def install_controller(env, arm, parameters):
-    if arm == "learned" or arm == "fixed":
+    if arm in ("learned", "learned_initial", "fixed"):
         return
+    if arm in ("coordinated_schedule", "local_actuated"):
+        if env.signal_control_protocol != SHARED_SIGNAL_PROTOCOL:
+            raise ValueError("Catalogue controllers require the shared signal executor")
+        return CoordinatedSchedule(env, parameters) if arm == "coordinated_schedule" else LocalActuated(env)
     for tid in env.tl_ids:
         logic = traci.trafficlight.getAllProgramLogics(tid)[0]
         logic.programID = "review_" + arm
@@ -866,6 +892,8 @@ def trial(job):
     manifest_bytes = Path(job["manifest"]).read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     m = json.loads(manifest_bytes)
+    learned_arm = job["arm"] in ("learned", "learned_initial")
+    shared_classical = job["arm"] in ("coordinated_schedule", "local_actuated")
     for name, expected in m["source_hashes"].items():
         if digest(ROOT / name) != expected:
             raise ValueError(f"Source changed since prepare: {name}. Use a fresh study directory.")
@@ -890,6 +918,17 @@ def trial(job):
             raise ValueError(f"Signals {moved} leave their family base slots; shared identities must keep their slots.")
         if any(tid not in family and slot in family.values() for tid, slot in slots.items()):
             raise ValueError("New signals cannot reuse reserved family base slots.")
+    if job["arm"] == "learned_initial":
+        artifact = m.get("training_artifact")
+        if not artifact or digest(artifact) != m.get("training_artifact_sha256"):
+            raise ValueError("Initial-policy diagnostics require a frozen catalogue training record")
+        training = json.loads(Path(artifact).read_text())
+        initial = next((row for row in training.get("checkpoints", []) if row["round"] == 0), None)
+        if (job["split"] != "diagnostic" or m.get("checkpoint_round") != 0 or
+                not initial or not initial["diagnostic_only"] or
+                initial["sha256"] != m["checkpoint_sha256"] or
+                training["layout"]["sha256"] != layout["sha256"]):
+            raise ValueError("An initial policy is diagnostic-only, never a trained comparator")
     warmup_control = m.get("warmup_control", "fixed")
     if warmup_control not in ("fixed", "random"):
         raise ValueError("warmup_control must be 'fixed' or 'random'.")
@@ -922,21 +961,35 @@ def trial(job):
                 manual_demand_veh=job["scale"], manual_demand_ped=job["scale"])
     if journey_protocol is not None:
         ctrl["warmup_steps"] = [journey_protocol["warmup_s"]] * 2
-    if job["arm"] == "learned":
+    if learned_arm:
         checkpoint = torch.load(m["checkpoint"], map_location="cpu")
         state_stats = checkpoint["lower"]
         if state_stats.get("observation_version", 1) != MLP_ActorCritic.observation_version:
             raise ValueError("Legacy control weights and Welford statistics require fresh training for this observation protocol.")
-        require_exposed_heads(state_stats.get("provenance"), layout.get("signal_slots"))
+        saved_protocol = (state_stats.get("provenance") or {}).get("signal_control_protocol")
+        if saved_protocol != ctrl.get("signal_control_protocol"):
+            raise ValueError("Checkpoint signal-control protocol differs from the requested executor")
+        if job["arm"] == "learned_initial":
+            from review_training import policy_digest
+            provenance = state_stats.get("provenance", {})
+            if (any(provenance.get("head_decisions", [1])) or any(provenance.get("head_updates", [1])) or
+                    state_stats["state_normalizer_count"] != 0):
+                raise ValueError("Initial diagnostic checkpoint must have zero training exposure")
+        else:
+            require_exposed_heads(state_stats.get("provenance"), layout.get("signal_slots"))
         policy = PPO(**lower).policy
         policy.load_state_dict(state_stats["state_dict"]); policy.eval()
         normalizer = WelfordNormalizer(state_stats["state_normalizer_mean"].shape)
         normalizer.manual_load(torch.from_numpy(state_stats["state_normalizer_mean"]),
                                torch.from_numpy(state_stats["state_normalizer_M2"]), state_stats["state_normalizer_count"])
         normalizer.eval()
+        if job["arm"] == "learned_initial" and policy_digest(policy) != training["initial_controller_sha256"]:
+            raise ValueError("Initial diagnostic policy does not match its declared initialization")
+    if (shared_classical or "catalogue_protocol" in m) and ctrl.get("signal_control_protocol") != SHARED_SIGNAL_PROTOCOL:
+        raise ValueError("Catalogue comparison lacks its shared signal-control configuration")
     env = ControlEnv(ctrl, str(folder), worker_id=0, network_iteration=layout["iteration"], current_net_file_path=str(net))
     tracker = Telemetry(env, job["arm"])
-    tracker.feedback = "feedback_protocol" in m
+    tracker.feedback = "feedback_protocol" in m or "catalogue_protocol" in m
     cohort = {}
     original_start = traci.start
     def instrumented_start(command, *args, **kwargs):
@@ -952,6 +1005,8 @@ def trial(job):
         return value
     traci.start = instrumented_start
     started = time.monotonic()
+    action_trace = logits_hook = None
+    probabilities = None
     try:
         if tracker.feedback:
             tracker.mechanism_file = (folder / "mechanism.jsonl").open("w")
@@ -964,18 +1019,42 @@ def trial(job):
                 assert warmup == journey_protocol["warmup_s"]
             # Every arm starts from the same traffic state for a layout/seed/scale.
             initial_state_hash = hashlib.sha256(np.asarray(state).tobytes()).hexdigest()
-            install_controller(env, job["arm"], job.get("parameters"))
+            controller = install_controller(env, job["arm"], job.get("parameters"))
+            if "catalogue_protocol" in m:
+                action_trace = (folder / "actions.jsonl").open("w")
+                if learned_arm:
+                    def capture_probabilities(module, inputs, logits):
+                        nonlocal probabilities
+                        logits = logits.detach()[0]
+                        midblock = logits[4 + torch.as_tensor(env.active_slots, dtype=torch.long)].sigmoid().tolist()
+                        probabilities = {env.tl_ids[0]: logits[:4].softmax(dim=0).tolist()}
+                        probabilities.update({tid: [1-p, p] for tid, p in zip(env.tl_ids[1:], midblock)})
+                    logits_hook = policy.actor_logits.register_forward_hook(capture_probabilities)
+
+            def choose_action(observation):
+                if learned_arm:
+                    with torch.no_grad():
+                        requested, _ = policy.act(normalizer.normalize(torch.as_tensor(observation)),
+                                                  layout["num_proposals"], training=False,
+                                                  active_slots=env.active_slots)
+                    requested = requested.cpu()
+                elif controller is not None:
+                    requested = controller.act()
+                else:
+                    requested = np.zeros(1 + layout["num_proposals"], dtype=np.int32)
+                if action_trace is not None:
+                    action_trace.write(json.dumps(dict(time_s=traci.simulation.getTime(),
+                                                       measured=tracker.active,
+                                                       requests=dict(zip(env.tl_ids, np.asarray(requested).tolist())),
+                                                       probabilities=probabilities), allow_nan=False) + "\n")
+                return requested
+
             tracker.active = True
             tracker.controller_active = True
             measured_wait = {"vehicle": 0.0, "pedestrian": 0.0}
-            action = np.zeros(1 + layout["num_proposals"], dtype=np.int32)
             for _ in range(45):
-                if job["arm"] == "learned":
-                    with torch.no_grad():
-                        action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"],
-                                               training=False, active_slots=env.active_slots)
-                    action = action.cpu()
-                state, _, done, _, info = env.eval_step(action, tl=job["arm"] != "learned")
+                action = choose_action(state)
+                state, _, done, _, info = env.eval_step(action, tl=not (learned_arm or shared_classical))
                 for kind in measured_wait:
                     measured_wait[kind] += info[kind + "_wait"]
             assert env.step_count == 450 and done
@@ -1004,6 +1083,9 @@ def trial(job):
                       "environment_approach_n": len(env.pedestrian_arrival_times),
                       "clock_arrival_mean": statistics.mean(tracker.first_approach.values()) if tracker.first_approach else None,
                       "clock_arrival_n": len(tracker.first_approach), "elapsed_s": time.monotonic()-started}
+            result["demand_windows"] = env.demand_windows
+            if controller is not None:
+                result["controller"] = controller.evidence
             if journey_protocol is not None:
                 # Measurement has ended; controller service continues without a reset.
                 tracker.active = False
@@ -1011,24 +1093,34 @@ def trial(job):
                 env.max_timesteps += journey_protocol["drain_cap_s"]
                 while (traci.simulation.getTime() < deadline and
                        any(set(cohort[kind]) - tracker.completed[kind] for kind in cohort)):
-                    if job["arm"] == "learned":
-                        with torch.no_grad():
-                            action, _ = policy.act(normalizer.normalize(torch.as_tensor(state)), layout["num_proposals"],
-                                                   training=False, active_slots=env.active_slots)
-                        action = action.cpu()
-                    state, _, _, _, _ = env.eval_step(action, tl=job["arm"] != "learned")
+                    action = choose_action(state)
+                    state, _, _, _, _ = env.eval_step(action, tl=not (learned_arm or shared_classical))
                 simulation_end = traci.simulation.getTime()
                 assert simulation_end <= deadline
                 assert measured_wait == tracker.wait
                 result["elapsed_s"] = time.monotonic()-started
+            if env.signal_executor is not None:
+                result["signal_service"] = env.signal_executor.stats
     finally:
         traci.start = original_start
+        if logits_hook is not None:
+            logits_hook.remove()
+        if action_trace is not None:
+            action_trace.close()
         if env.sumo_running:
             traci.switch(env.traci_label)
             traci.close()  # Wait for SUMO to finish writing complete and unfinished trip records.
             env.sumo_running = False
         if tracker.mechanism_file is not None:
             tracker.mechanism_file.close()
+    error_log = folder / f"sumo_errorlog{env.traci_label}.txt"
+    person_collisions = _person_collision_events(error_log)
+    tracker.collisions.extend(person_collisions)
+    tracker.collisions.sort(key=lambda event: event["time"])
+    # SUMO warning timestamps mark the start of the step, not its completed boundary.
+    result["collisions"].extend(event for event in person_collisions if event["time"] < end_time)
+    result["collisions"].sort(key=lambda event: event["time"])
+    result["sumo_errorlog_sha256"] = digest(error_log)
     tripinfo = ET.parse(folder / "tripinfo.xml").getroot()
     journeys = {"scope": "Full simulation including warmup; duration summaries use completed journeys.",
                 "tripinfo_sha256": digest(folder / "tripinfo.xml")}
@@ -1074,6 +1166,8 @@ def trial(job):
                      "accumulated stopped time on the declared mid-block pedestrian approach edges per recorded "
                      "approach pedestrian, not all journey waiting. The approach cohort may differ by layout.",
             "mechanism_sha256": digest(folder / "mechanism.jsonl")}
+    if action_trace is not None:
+        result["action_trace_sha256"] = digest(folder / "actions.jsonl")
     save(result_path, result)
     return str(result_path)
 
@@ -1097,10 +1191,179 @@ def run_jobs(jobs, fail_fast=True):
     return failures
 
 
+def catalogue_study(directory):
+    """Bind mutable progress to the immutable preparation and its exact inputs."""
+    directory = Path(directory)
+    study = json.loads((directory / "study.json").read_text())
+    prepared_path = directory / "preparation.json"
+    if study.get("kind") != "catalogue":
+        raise ValueError("Use catalogue-prepare or catalogue-smoke first")
+    if digest(prepared_path) != study["preparation_sha256"]:
+        raise ValueError("Frozen catalogue preparation changed")
+    prepared = json.loads(prepared_path.read_text())
+    if any(study.get(key) != value for key, value in prepared.items() if key != "status"):
+        raise ValueError("Catalogue inputs differ from the immutable preparation")
+    for name, checksum in study["source_hashes"].items():
+        if digest(ROOT / name) != checksum or digest(directory / "source_snapshot" / name) != checksum:
+            raise ValueError(f"Catalogue source changed: {name}")
+    for name in ("protocol", "catalogue"):
+        if digest(directory / f"{name}.json") != study[f"{name}_sha256"]:
+            raise ValueError(f"Frozen catalogue {name} changed")
+    for layout in study["layouts"].values():
+        if digest(layout["network"]) != layout["sha256"]:
+            raise ValueError("Frozen catalogue network changed")
+    return study
+
+
+def catalogue_jobs(directory, stage):
+    """Declared catalogue calibration or development diagnostics, never held-out selection."""
+    directory = Path(directory).resolve()
+    study = catalogue_study(directory)
+    protocol = study["protocol"]
+    learning_rate_screen = protocol.get("study_type") == "learning_rate_screen"
+    if learning_rate_screen and stage == "calibration":
+        raise ValueError("Learning-rate screens do not calibrate classical controllers; use catalogue-diagnose")
+    smoke = study["settings"]["smoke"]
+    scales = [1.] if smoke else protocol["scenarios"]["scales"]
+    seeds = protocol["randomness"]["calibration_seeds" if stage == "calibration" else "diagnostic_seeds"]
+    if smoke:
+        seeds = seeds[:1]
+    manifests = directory / "catalogue_manifests"
+    manifests.mkdir(exist_ok=True)
+    base = dict(source_hashes=study["source_hashes"], layouts=study["layouts"],
+                configuration=study["configuration"], observation_version=MLP_ActorCritic.observation_version,
+                active_arms=["coordinated_schedule", "local_actuated"], learned_control_skip_reason=None,
+                journey_protocol=JOURNEY_PROTOCOL, warmup_control="fixed",
+                preparation_sha256=study["preparation_sha256"],
+                catalogue_protocol=protocol, checkpoint=None)
+
+    def manifest(name, value):
+        path = manifests / (name + ".json")
+        if path.exists() and json.loads(path.read_text()) != value:
+            raise ValueError(f"Frozen catalogue manifest changed: {path}")
+        if not path.exists():
+            save(path, value)
+        return str(path)
+
+    jobs = []
+    classical_manifest = manifest("classical", base) if not learning_rate_screen else None
+
+    def add(layout, arm, manifest_path, identity, **extra):
+        for scale in scales:
+            for seed in seeds:
+                jobs.append(dict(directory=str(directory / stage / layout / identity / f"{scale}_{seed}"),
+                                 manifest=manifest_path, split="selection" if stage == "calibration" else "diagnostic",
+                                 layout=layout, arm=arm, seed=seed, scale=scale, **extra))
+
+    if stage == "calibration":
+        grid = coordinated_grid(protocol)
+        if smoke:
+            grid = [grid[0], grid[-1]]
+        for layout in study["layouts"]:
+            for index, parameters in enumerate(grid):
+                add(layout, "coordinated_schedule", classical_manifest, f"setting_{index}",
+                    parameters=parameters, parameter_index=index)
+    else:
+        if study["status"] != "complete":
+            raise ValueError("Catalogue diagnostics require every declared training job to complete")
+        if not learning_rate_screen:
+            selection = json.loads((directory / "catalogue_calibration.json").read_text())
+            if selection["preparation_sha256"] != study["preparation_sha256"]:
+                raise ValueError("Catalogue calibration belongs to a different frozen study")
+        for layout in study["layouts"]:
+            if not learning_rate_screen:
+                chosen = selection["selected"][layout]
+                if chosen is None:
+                    raise ValueError(f"No eligible coordinated controller for {layout}; preserve and review calibration failures")
+                add(layout, "coordinated_schedule", classical_manifest, "coordinated", parameters=chosen["parameters"])
+                add(layout, "local_actuated", classical_manifest, "local")
+            for learner_seed in study["seeds"]:
+                artifact = directory / str(learner_seed) / layout / "training.json"
+                training = json.loads(artifact.read_text())
+                if not training["complete"] or training["layout"]["sha256"] != study["layouts"][layout]["sha256"]:
+                    raise ValueError("Diagnostics require a complete, layout-matched training record")
+                expected_checkpoints = [0, 3] if smoke else [0, 48, 96]
+                if learning_rate_screen and sorted(row["round"] for row in training["checkpoints"]) != expected_checkpoints:
+                    raise ValueError(f"Learning-rate screen diagnostics require exactly checkpoints {expected_checkpoints}")
+                for checkpoint in training["checkpoints"]:
+                    round_number = checkpoint["round"]
+                    arm = "learned_initial" if round_number == 0 else "learned"
+                    value = dict(base, active_arms=[arm], configuration=training["configuration"],
+                                 checkpoint=checkpoint["path"], checkpoint_sha256=checkpoint["sha256"],
+                                 checkpoint_round=round_number, training_artifact=str(artifact),
+                                 training_artifact_sha256=digest(artifact))
+                    path = manifest(f"{layout}_{learner_seed}_{round_number}", value)
+                    add(layout, arm, path, f"learned_{learner_seed}_{round_number}",
+                        learner_seed=learner_seed, checkpoint_round=round_number)
+    return jobs
+
+
+def summarize_catalogue(directory, stage, jobs, failures):
+    """Keep the complete matrix, including ineligible cells and paired learner changes."""
+    directory = Path(directory).resolve()
+    records = []
+    groups = {}
+    for job in jobs:
+        groups.setdefault(job["manifest"], []).append(job)
+    for group in groups.values():
+        records.extend(feedback_results(group, failures))
+    demands, initial_states = {}, {}
+    for row in records:
+        if "result" not in row:
+            continue
+        result = json.loads(Path(row["result"]).read_text())
+        job = row["job"]
+        demand = {kind: entry["demand_sha256"] for kind, entry in result["traffic"].items()}
+        block = job["scale"], job["seed"]
+        if demands.setdefault(block, demand) != demand:
+            raise ValueError("Catalogue demand differs across a paired scenario")
+        key = job["layout"], *block
+        if initial_states.setdefault(key, result["initial_state_sha256"]) != result["initial_state_sha256"]:
+            raise ValueError("Catalogue arms have different warmup observations")
+    study = catalogue_study(directory)
+    report = dict(stage=stage, preparation_sha256=study["preparation_sha256"],
+                  scope="Development only; no layout selection, superiority, equivalence or convergence claim.",
+                  records=records, failures=failures, trials=len(jobs),
+                  measured_steps=sum(row.get("measurement_s", 0) for row in records),
+                  total_simulated_steps=sum(row.get("simulation_s", 0) for row in records))
+    if stage == "calibration":
+        selected = {}
+        for layout in study["layouts"]:
+            candidates = {}
+            for row in records:
+                if row["job"]["layout"] == layout:
+                    candidates.setdefault(row["job"]["parameter_index"], []).append(row)
+            eligible = []
+            for index, rows in candidates.items():
+                if all(row["scores"] is not None for row in rows):
+                    eligible.append((statistics.mean(row["scores"]["journey"] for row in rows), index, rows[0]["job"]["parameters"]))
+            best = min(eligible, key=lambda item: item[:2]) if eligible else None
+            selected[layout] = None if best is None else dict(score=best[0], parameter_index=best[1], parameters=best[2])
+        report["selected"] = selected
+    else:
+        pairs = {}
+        for row in records:
+            job = row["job"]
+            if "learner_seed" in job:
+                key = (job["layout"], job["learner_seed"], job["scale"], job["seed"])
+                pairs.setdefault(key, {})[job["checkpoint_round"]] = None if row["scores"] is None else row["scores"]["journey"]
+        report["paired_final_minus_initial"] = [
+            dict(layout=key[0], learner_seed=key[1], scale=key[2], seed=key[3], by_round=values,
+                 difference_s=(values[max(values)]-values[0]
+                               if values.get(0) is not None and values.get(max(values)) is not None else None))
+            for key, values in pairs.items()]
+    target = directory / f"catalogue_{stage}.json"
+    if target.exists() and json.loads(target.read_text()) != report:
+        raise ValueError(f"Catalogue {stage} is already frozen; use a new study for changed outcomes")
+    save(target, report)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["prepare", "smoke", "tune", "search", "matrix",
-                                              "feedback-prepare", "feedback-select", "feedback-evaluate"],
+                                              "feedback-prepare", "feedback-select", "feedback-evaluate",
+                                              "catalogue-calibrate", "catalogue-diagnose"],
                         help="prepare/smoke/tune/search/matrix: existing review comparisons; "
                              "feedback-prepare: freeze a declared placement protocol without checkpoints; "
                              "feedback-select: tune controls and freeze the three layout choices on training data; "
@@ -1117,6 +1380,13 @@ def main():
         parser.error("--protocol is required only with feedback-prepare")
     os.chdir(ROOT)
     directory = args.directory.resolve()
+    if args.operation in ("catalogue-calibrate", "catalogue-diagnose"):
+        stage = "calibration" if args.operation == "catalogue-calibrate" else "diagnostic"
+        jobs = catalogue_jobs(directory, stage)
+        failures = run_jobs(jobs, fail_fast=False)
+        report = summarize_catalogue(directory, stage, jobs, failures)
+        print(json.dumps({key: value for key, value in report.items() if key not in ("records",)}, indent=2))
+        return
     if args.operation == "feedback-prepare":
         print(prepare_feedback(directory, args.protocol))
         return

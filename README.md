@@ -45,8 +45,10 @@ The demand XML files encode origin-destination demand, not fully routed paths; r
 
 | Artifact | Location | Notes |
 | --- | --- | --- |
-| Pretrained policy | `runs/readout_32/May09_11-34-05/saved_policies/policy_at_7603200.pth` | Checkpoint used by the default `eval_model_path`. |
-| Paper evaluation JSONs | `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` | Includes DeCoR control, fixed-time, unsignalized, and real-world unsignalized evaluation outputs. |
+| Fresh controller checkpoints | `runs/<study>/<learner_seed>/<layout>/` | Local catalogue-training outputs; checkpoints and run evidence are not bundled with the source repository. |
+| Catalogue diagnostics | `runs/<study>/catalogue_diagnostic.json` | Local full-cohort results and provenance, with raw per-trial evidence retained alongside them. |
+
+The historical May 2025 checkpoint and evaluation JSONs have been removed from this checkout. Historical plotting defaults and `config.py`'s legacy `eval_model_path` still name those inputs; supply compatible local artifacts explicitly rather than treating those paths as bundled data. The fixed-catalogue workflow below does not depend on them.
 
 ---
 ### ⚙️ Setup
@@ -63,6 +65,7 @@ The demand XML files encode origin-destination demand, not fully routed paths; r
   ```
 - The environments use the binaries bundled with the installed `eclipse-sumo` package, not an unrelated system `SUMO_HOME` or `PATH` installation. `gui=True` uses its `sumo-gui` binary and requires a working graphical display.
 - Historical runs retain their recorded source and simulator versions. The new builder preserves curved road/sidewalk geometry and source sidewalk widths, and the intersection uses conflict-compatible protected greens. Do not reinterpret earlier results as validation of this revised geometry and signal behavior.
+- A copied `.venv` can retain interpreter paths from the previous machine. Recreate it from `uv.lock` on the destination, and derive destination-local catalogue inputs with verified network hashes; do not rewrite archived manifests or source snapshots to repair old absolute paths.
 
 ---
 ### 🚀 Training
@@ -130,7 +133,7 @@ The active evaluation path in `main.py` evaluates the trained DeCoR policy over 
 runs/<run_name>/results/eval_<timestamp>/<checkpoint>_ppo.json
 ```
 
-Paper comparison results are included under `runs/readout_32/May09_11-34-05/results/eval_May10_16-16-52/` for real-world unsignalized, DeCoR unsignalized, DeCoR fixed-time, and DeCoR control settings.
+Historical paper comparisons used the May 2025 run. Those evaluation files are no longer included; use explicitly retained historical inputs only for historical plots, not as evidence for the current implementation.
 
 #### Placement-matched baselines
 
@@ -175,7 +178,7 @@ Each timing pair specifies intersection and mid-block vehicle-green durations in
 
 Selection uniformly averages per-trial scores over the declared scale-by-seed grid; it does not pool travelers across trials.
 
-Trials use 100 s fixed-control warmup, 450 s measurement, then at most 1800 s continued service without later departures. The complete cohort includes warmup trips; journey time begins at scheduled departure. A candidate timing must complete every selection cohort without teleports or collisions. Missing approach observations are undefined, not zero; failures remain in `feedback_selection.json`, and no eligible choice blocks evaluation rather than manufacturing a winner.
+Trials use 100 s fixed-control warmup, 450 s measurement, then at most 1800 s continued service without later departures. The complete cohort includes warmup trips; journey time begins at scheduled departure. A candidate timing must complete every selection cohort without teleports or collisions other than pedestrian–pedestrian overlaps. Those overlaps remain reported diagnostics, not score vetoes. Missing approach observations are undefined, not zero; failures remain in `feedback_selection.json`, and no eligible choice blocks evaluation rather than manufacturing a winner.
 
 Selection uses the original recording's `[0, 2400)` window; evaluation uses `[2400, 3600)` with distinct declared seeds. That evaluation window has already been inspected in earlier studies: this is within-recording exploratory/mechanistic evidence, not a fresh dataset. Source/input/network hashes and selection-result hashes guard reuse. `feedback-select` cannot overwrite frozen choices. `feedback_results.json` retains every declared evaluation, simulation accounting, and paired differences in the common journey criterion. Scales are averaged within each evaluation-seed block before computing a conditional Student-t interval across blocks; incomplete pairs are never dropped. Benefit, harm, and practical equivalence use the declared margin and the whole interval. These are per-comparison, not simultaneous, statements conditional on the recording and selected layouts.
 
@@ -183,10 +186,60 @@ Each comparison identifies both selected layouts and flags `identical_selection`
 
 Each trial retains raw demand, `tripinfo.xml`, simulator logs and `mechanism.jsonl`. Mechanism records cover every warmup, measurement and drain second: signal phases/states, lane membership arrivals, stopped-vehicle counts and distance from the stop line to the farthest stopped vehicle's rear. The latter is a queue-extent proxy, not a verified contiguous queue or a spillback diagnosis; lane membership arrivals include lane changes. Geometry and lane shapes support subsequent mechanism analysis without claiming causal explanations automatically.
 
+#### Fixed-catalogue controller development
+
+`review_training.py` supports fresh controller training on a separately prepared layout catalogue. Each layout receives its own policy and Welford state; layouts sharing a learner seed start from identical controller parameters. The design policy is not updated. Preparation freezes the protocol, classified configuration, sources, demand inputs and exact network/slot identities in `preparation.json`; mutable progress lives in `study.json`.
+
+Use the prepared `layouts.json` and declared `pilot_protocol.json`, with fresh output directories:
+
+```bash
+# Freeze inputs without starting learners.
+uv run --frozen python review_training.py catalogue-prepare runs/catalogue_prepared \
+    --catalogue /path/to/layouts.json --protocol /path/to/pilot_protocol.json
+
+# Separately authorized execution smoke: two layouts, one seed, three ten-worker rounds each.
+uv run --frozen python review_training.py catalogue-smoke runs/catalogue_smoke \
+    --catalogue /path/to/layouts.json --protocol /path/to/pilot_protocol.json
+uv run --frozen python review_validation.py catalogue-calibrate runs/catalogue_smoke
+uv run --frozen python review_validation.py catalogue-diagnose runs/catalogue_smoke
+```
+
+`catalogue-train` runs the separately authorized pilot, not the smoke. It can consume an unused prepared directory, but cannot retry a running or failed study. Physical validation and exact-source review are prerequisites; preparation or a passing smoke does not authorize the pilot.
+
+A protocol with `"study_type": "learning_rate_screen"` uses the same preparation/training commands for one learner seed, the validated `two_spread` and `six_central` catalogue entries, and one declared learning rate from `1e-4`, `3e-4`, or `1e-3`. Prepare a separate fresh study for each rate; all other training settings and numerical gates remain unchanged. Each study uses ten rollout workers, so account for their combined resource use when running rates concurrently.
+
+For this profile, run `catalogue-diagnose` after training completes; it evaluates only the learned checkpoints and does not require or admit redundant classical calibration. Full screens retain checkpoints 0/48/96; the existing three-round smoke uses 0/3. Ordinary catalogue studies still require classical calibration and include classical comparators. Select a provisional rate using predeclared development performance and eligibility, then verify it with fresh learner seeds; this tuning screen does not answer the paper's infrastructure-selection question.
+
+Learned, coordinated-schedule and local-actuated controllers use the same `shared_v1` executor: yellow, all-red, occupied-crossing/junction clearance and minimum green. A committed service request survives later requests while clearance is pending. Checkpoints retain the executor protocol, sparse slot map and per-head exposure; incompatible executor protocols are rejected before loading weights. Round-zero checkpoints are explicitly diagnostic-only and do not bypass trained-policy exposure checks.
+
+Training records distinguish successfully collected learner steps from confirmed executed steps, warmup and uncollected work. An interrupted simulator call makes execution accounting a lower bound. Failed rounds and original errors remain recorded; the collector tears down only its owned workers, without an optimizer update after collection failure.
+
+Calibration and diagnostics use paired demand, fixed warmup and a full-cohort drain cap. Teleports, serious or unclassified collisions, or unfinished cohorts make the exact primary score unavailable rather than zero. Pedestrian–pedestrian overlaps do not suppress an otherwise valid score. Exact-score availability is distinct from a development continuation decision: an isolated unfinished trip is not an automatic stop; report its count and an explicit journey-time lower bound instead of dropping the scenario or pretending it finished. All outcomes, requested actions, learned action probabilities and executed service traces are retained. Small KL, a checkpoint roundtrip or positive head exposure does not demonstrate controller competence, traffic safety or superiority.
+
+Collision reporting records TraCI collision events, rather than affected vehicle IDs, and adds pedestrian–pedestrian overlaps from SUMO's closed error log because those warnings are not registered in TraCI. Only events explicitly classified as `person-person` receive the diagnostic-only exemption; pedestrian–vehicle, vehicle–vehicle and unclassified collisions remain serious review conditions. Reporting covers warmup, measurement and drainage; the pre-drain snapshot excludes later incidents. Earlier vehicle-only records can undercount collisions. Preserve original records and frozen decisions, and identify later reporting corrections or acceptance-rule revisions separately instead of rewriting history. PPO numerical stop thresholds remain unchanged.
+
+Lower-policy updates additionally report mean pre-clipping actor and critic gradient norms, whole-update actor parameter displacement, and full-rollout entropy divided by the maximum entropy of each transition's active heads. Catalogue gate records retain these measurements without changing the optimizer or clipping rule. They diagnose update scale and policy concentration; they are not convergence or competence criteria.
+
+The optional logger uses one W&B run per study, layout and learner seed, with a compact metric allowlist under `training/`, `ppo/` and `eval/`. Its isolated SDK leaves the scientific environment and authoritative local records unchanged:
+
+```bash
+uv run --no-project --with wandb==0.30.0 python wandb_sync.py runs/catalogue_smoke --follow --mode offline
+# After stopping the offline process, use the explicitly authorized private destination:
+uv run --no-project --with wandb==0.30.0 python wandb_sync.py runs/catalogue_smoke --once --mode online \
+    --entity YOUR_ENTITY --project YOUR_PRIVATE_PROJECT
+```
+
+Training rounds, PPO updates and evaluation checkpoint rounds have separate horizontal axes. Rewards are recorded only for the round that triggers an actual controller update, not reconstructed over the full multi-round PPO buffer. Evaluation appears only after the entire declared demand-scale/seed block is available. `eval/primary_journey_mean_s` averages the per-block sum of pedestrian journey time and vehicle time loss plus insertion delay; it remains null if any block is ineligible or fails. Completion fractions pool native completed/scheduled counts, and unavailable incident counters remain null rather than zero. Individual calibration and classical-controller trials stay local. Configuration explicitly labels current training as sampled and diagnostic evaluation as greedy. The logger consumes published diagnostics; it does not schedule evaluations or launch training.
+
+The logger verifies private project access before upload and sends selected metrics and provenance hashes, not source files or checkpoints. A versioned event ledger preserves late evaluations without rewriting earlier training events; keep `.wandb_sync/v2/ledgers/` when resuming. Offline and online cursors are separate, and the v2 learner streams do not reuse legacy per-trial runs. Restart this same CLI against the authoritative JSON records; do not upload its staging directories with `wandb sync`. Online acceptance requires server history readback, and a failed readback leaves the cursor unchanged with a visible error. Local training does not depend on the logging service.
+
 ### 📝 Code Structure
 
 ```text
 ├── main.py                  # Training and evaluation entry point
+├── review_training.py       # Frozen comparison and fixed-catalogue training workflows
+├── review_validation.py     # Calibration, full-cohort diagnostics and comparisons
+├── wandb_sync.py            # Isolated optional per-learner W&B logger
 ├── config.py                # Runtime configuration and argument grouping
 ├── utils.py                 # Policy IO, demand scaling, result aggregation
 ├── pyproject.toml           # uv project metadata and direct dependencies
@@ -212,10 +265,11 @@ Each trial retains raw demand, `tripinfo.xml`, simulator logs and `mechanism.jso
 │   ├── design_env.py        # Higher-level crosswalk design environment
 │   ├── control_env.py       # Lower-level TraCI/SUMO control environment
 │   ├── worker.py            # Parallel training/evaluation workers
+│   ├── signal_control.py    # Shared clearance executor and classical request policies
 │   ├── sim_setup.py         # Phase definitions and lane/crosswalk metadata
 │   └── env_utils.py         # SUMO config, graph, and geometry helpers
 └── runs/
-    └── readout_32/...       # Included checkpoint and paper result artifacts
+    └── <study>/             # Local/ignored training, checkpoints and evaluation evidence
 ```
 
 ### Generating plots

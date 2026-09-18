@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.optim as optim
 from .ppo_utils import GraphDataset, collate_fn
@@ -113,11 +114,15 @@ class PPO:
             torch.distributions.Categorical(logits=reference_logits[:, :4]), intersection)
         exact_kl += (torch.distributions.kl_divergence(
             torch.distributions.Bernoulli(logits=reference_logits[:, 4:]), crossings) * active).sum(dim=1)
+        # Actual joint entropy of the active heads over its maximum ln4 + (active crossings)·ln2.
+        entropy = intersection.entropy() + (crossings.entropy() * active).sum(dim=1)
+        max_entropy = math.log(4) + active.sum(dim=1) * math.log(2)
         return {
             'approx_kl': ((ratios - 1) - logratios).mean(),
             'exact_kl': exact_kl.mean(),
             'clip_fraction': ((ratios - 1).abs() > self.eps_clip).float().mean(),
             'max_abs_logratio': logratios.abs().max(),
+            'entropy_fraction': (entropy / max_entropy).mean(),
         }
 
     def update(self, memories, num_proposals = None, bootstrap_value=0.0):
@@ -189,6 +194,11 @@ class PPO:
                 reference_logits = self.policy_old.actor(diagnostic_states)
             control_before = self._control_diagnostics(
                 diagnostic_states, diagnostic_actions, diagnostic_logprobs, reference_logits)
+            # Disjoint modules; measured only, never clipped or stepped separately.
+            actor_parameters = list(self.policy.actor_layers.parameters()) + list(self.policy.actor_logits.parameters())
+            critic_parameters = list(self.policy.critic_layers.parameters()) + list(self.policy.critic_value.parameters())
+            avg_actor_grad_norm = 0.0
+            avg_critic_grad_norm = 0.0
         else:  # higher level agent
             states = memories.states  # Already a list of DataBatch objects
             dataset = GraphDataset(states, actions, num_proposals, old_logprobs, advantages, returns, old_values)
@@ -279,6 +289,11 @@ class PPO:
                 # Take gradient step
                 self.optimizer.zero_grad()
                 loss.backward()
+                if self.agent_type == 'lower':
+                    # Pre-clipping L2 norm per module; reads gradients only.
+                    with torch.no_grad():
+                        avg_actor_grad_norm += torch.stack([p.grad.norm() for p in actor_parameters if p.grad is not None]).norm().item()
+                        avg_critic_grad_norm += torch.stack([p.grad.norm() for p in critic_parameters if p.grad is not None]).norm().item()
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm) # Clipping to prevent exploding gradients
                 self.optimizer.step()
 
@@ -304,6 +319,9 @@ class PPO:
             avg_value_loss /= (num_batches * self.K_epochs)
             avg_entropy_loss /= (num_batches * self.K_epochs)
             avg_total_loss /= (num_batches * self.K_epochs)
+            if self.agent_type == 'lower':
+                avg_actor_grad_norm /= (num_batches * self.K_epochs)
+                avg_critic_grad_norm /= (num_batches * self.K_epochs)
         else:
              avg_policy_loss, avg_value_loss, avg_entropy_loss, avg_total_loss = 0, 0, 0, 0
 
@@ -315,6 +333,12 @@ class PPO:
         # print("\n\n\nPolicy Old params:")
         # for name, param in self.policy_old.named_parameters():
         #     print(f"{name}: {param.data}")
+
+        if self.agent_type == 'lower':
+            # policy_old still holds the pre-update parameters: whole-update actor displacement.
+            with torch.no_grad():
+                old_actor_parameters = list(self.policy_old.actor_layers.parameters()) + list(self.policy_old.actor_logits.parameters())
+                actor_update_norm = torch.stack([(new - old).norm() for new, old in zip(actor_parameters, old_actor_parameters)]).norm().item()
 
         # Copy new weights into old policy
         # self.policy_old = deepcopy(self.policy)
@@ -333,5 +357,8 @@ class PPO:
             result.update(self._control_diagnostics(
                 diagnostic_states, diagnostic_actions, diagnostic_logprobs, reference_logits))
             result['preupdate_max_abs_logratio'] = control_before['max_abs_logratio']
+            result['actor_grad_norm'] = avg_actor_grad_norm
+            result['critic_grad_norm'] = avg_critic_grad_norm
+            result['actor_update_norm'] = actor_update_norm
         return result
     

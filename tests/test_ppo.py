@@ -1,3 +1,4 @@
+import math
 import unittest
 from tempfile import TemporaryDirectory
 
@@ -194,6 +195,72 @@ class PPOValueLossTests(unittest.TestCase):
         result = agent.update(memory)
         self.assertEqual(float(result["exact_kl"]), 0.0)
         self.assertEqual(float(result["clip_fraction"]), 0.0)
+
+    def controller_rollout(self, agent, slot_lists):
+        memory = Memory()
+        for index, slots in enumerate(slot_lists):
+            state = torch.randn(10, 123)
+            with torch.no_grad():
+                action, logprob = agent.policy_old.act(state, len(slots), active_slots=slots)
+                value = agent.policy_old.critic(state.unsqueeze(0)).item()
+            padded = torch.full((11,), -1, dtype=action.dtype)
+            padded[0], padded[1 + torch.tensor(slots)] = action[0], action[1:]
+            memory.append(state, padded, len(slots), value, logprob.item(), (-1.) ** index, True)
+        return memory
+
+    def test_entropy_fraction_normalizes_by_each_transitions_active_heads(self):
+        torch.set_num_threads(1)
+        torch.manual_seed(75)
+        lower_args = classify_and_return_args(get_config(), "cpu")[3]
+        agent = PPO(**dict(lower_args, lr=0.0, K_epochs=1, batch_size=4))
+        with torch.no_grad():
+            agent.policy.actor_logits.weight.zero_()
+            agent.policy.actor_logits.bias.zero_()
+            agent.policy.actor_logits.bias[5] = 9.0  # Slot 1 is inactive in every transition.
+            agent.policy_old.load_state_dict(agent.policy.state_dict())
+        slot_lists = [[0, 2], [0], [2, 7, 9], [4]]
+        memory = self.controller_rollout(agent, slot_lists)
+        # Uniform active heads sit at their maximum regardless of how many crossings are active.
+        self.assertAlmostEqual(float(agent.update(memory)["entropy_fraction"]), 1.0, places=6)
+        with torch.no_grad():
+            agent.policy.actor_logits.bias[0] = 50.0  # Deterministic intersection, uniform crossings.
+            agent.policy_old.load_state_dict(agent.policy.state_dict())
+        expected = sum(len(s) * math.log(2) / (math.log(4) + len(s) * math.log(2)) for s in slot_lists) / len(slot_lists)
+        self.assertAlmostEqual(float(agent.update(memory)["entropy_fraction"]), expected, places=6)
+
+    def test_module_gradient_norms_are_pre_clipping_and_disjoint(self):
+        torch.set_num_threads(1)
+        lower_args = classify_and_return_args(get_config(), "cpu")[3]
+        norms = {}
+        for max_grad_norm in (1e-6, 1e6):
+            torch.manual_seed(76)
+            agent = PPO(**dict(lower_args, lr=1e-3, K_epochs=1, batch_size=8, max_grad_norm=max_grad_norm))
+            memory = self.controller_rollout(agent, [[0, 2], [7], [2, 5, 9], [0], [1, 6]])
+            result = agent.update(memory)
+            norms[max_grad_norm] = (result["actor_grad_norm"], result["critic_grad_norm"])
+        self.assertEqual(norms[1e-6], norms[1e6])
+        self.assertGreater(min(norms[1e6]), 0.0)
+        torch.manual_seed(76)
+        agent = PPO(**dict(lower_args, lr=1e-3, K_epochs=1, batch_size=8, vf_coef=0.0))
+        result = agent.update(self.controller_rollout(agent, [[0, 2], [7], [2, 5, 9], [0], [1, 6]]))
+        self.assertEqual(result["critic_grad_norm"], 0.0)
+        self.assertGreater(result["actor_grad_norm"], 0.0)
+
+    def test_actor_update_norm_is_displacement_from_pre_update_actor(self):
+        torch.set_num_threads(1)
+        torch.manual_seed(77)
+        lower_args = classify_and_return_args(get_config(), "cpu")[3]
+        agent = PPO(**dict(lower_args, lr=1e-3, K_epochs=2, batch_size=2))
+        memory = self.controller_rollout(agent, [[0, 2], [7], [2, 5, 9], [0], [1, 6]])
+        before = [p.detach().clone() for p in list(agent.policy.actor_layers.parameters())
+                  + list(agent.policy.actor_logits.parameters())]
+        result = agent.update(memory)
+        after = list(agent.policy.actor_layers.parameters()) + list(agent.policy.actor_logits.parameters())
+        displacement = math.sqrt(sum(float((a - b).square().sum()) for a, b in zip(after, before)))
+        self.assertGreater(displacement, 0.0)
+        self.assertAlmostEqual(result["actor_update_norm"], displacement, places=5)
+        frozen = PPO(**dict(lower_args, lr=0.0, K_epochs=2, batch_size=2))
+        self.assertEqual(frozen.update(self.controller_rollout(frozen, [[0], [3, 4]]))["actor_update_norm"], 0.0)
 
 
 if __name__ == "__main__":

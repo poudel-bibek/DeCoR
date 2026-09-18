@@ -11,6 +11,7 @@ import pprint
 from utils import scale_demand, scale_demand_sliced_window
 from .env_utils import *
 from .sim_setup import *
+from .signal_control import PROTOCOL as SHARED_SIGNAL_PROTOCOL, SignalExecutor
 
 class ControlEnv(gym.Env):
     def __init__(self, control_args, run_dir, worker_id=None, network_iteration=None, current_net_file_path=None):
@@ -41,6 +42,14 @@ class ControlEnv(gym.Env):
         self.auto_start = control_args['auto_start']
         self.warmup_steps = control_args['warmup_steps'] # is a list of two values
         self.sumo_running = False
+        self.signal_control_protocol = control_args.get('signal_control_protocol')
+        if self.signal_control_protocol not in (None, SHARED_SIGNAL_PROTOCOL):
+            raise ValueError('Unknown signal control protocol')
+        if self.signal_control_protocol and (self.step_length != 1 or self.action_duration != 10):
+            raise ValueError('Shared signal control requires 1 s steps and 10 s decisions')
+        self.signal_executor = None
+        self.sumo_seed = control_args.get('sumo_seed')
+        self.demand_windows = {}
         self.step_count = 0
         
         # Modify file paths to include the unique suffix. Each worker has their own environment and hence their own copy of the trips file.
@@ -933,6 +942,10 @@ class ControlEnv(gym.Env):
         In the design env, there are variable number of Mid-block TLs. 
         
         """
+        if self.signal_control_protocol == SHARED_SIGNAL_PROTOCOL:
+            if self.signal_executor is None:
+                self.signal_executor = SignalExecutor(self)
+            return self.signal_executor.apply(action)
         #print(f"Action: {action}, switch_state: {switch_state}, type: {type(switch_state)}")
         current_phase = []
 
@@ -1416,27 +1429,29 @@ class ControlEnv(gym.Env):
         self.total_unique_ids_ped.clear()
         self.recorded_conflicts.clear()
         self.previous_action = None
+        self.signal_executor = None
+        self.demand_windows = {}
 
         window_size = self.max_timesteps * self.step_length + self.warmup_steps[1]
 
         if self.manual_demand_veh is not None : 
             #scaling = convert_demand_to_scale_factor(self.manual_demand_veh, "vehicle", self.vehicle_input_trips) # Convert the demand to scaling factor first
             # scale_demand(self.vehicle_input_trips, self.vehicle_output_trips, self.manual_demand_veh, demand_type="vehicle") # directly scaling factor given
-            scale_demand_sliced_window(self.vehicle_input_trips, self.vehicle_output_trips, self.manual_demand_veh, demand_type="vehicle", window_size=window_size, evaluation=eval_mode)
+            self.demand_windows['vehicle'] = scale_demand_sliced_window(self.vehicle_input_trips, self.vehicle_output_trips, self.manual_demand_veh, demand_type="vehicle", window_size=window_size, evaluation=eval_mode)
         else: 
             # Automatically scale demand 
             scale_factor_vehicle = random.uniform(self.demand_scale_min, self.demand_scale_max)
             # scale_demand(self.vehicle_input_trips, self.vehicle_output_trips, scale_factor_vehicle, demand_type="vehicle")
-            scale_demand_sliced_window(self.vehicle_input_trips, self.vehicle_output_trips, scale_factor_vehicle, demand_type="vehicle", window_size=window_size, evaluation=eval_mode)
+            self.demand_windows['vehicle'] = scale_demand_sliced_window(self.vehicle_input_trips, self.vehicle_output_trips, scale_factor_vehicle, demand_type="vehicle", window_size=window_size, evaluation=eval_mode)
 
         if self.manual_demand_ped is not None:
             # scaling = convert_demand_to_scale_factor(self.manual_demand_ped, "pedestrian", self.pedestrian_input_trips)
             # scale_demand(self.pedestrian_input_trips, self.pedestrian_output_trips, self.manual_demand_ped, demand_type="pedestrian") # directly scaling factor given
-            scale_demand_sliced_window(self.pedestrian_input_trips, self.pedestrian_output_trips, self.manual_demand_ped, demand_type="pedestrian", window_size=window_size, evaluation=eval_mode)
+            self.demand_windows['pedestrian'] = scale_demand_sliced_window(self.pedestrian_input_trips, self.pedestrian_output_trips, self.manual_demand_ped, demand_type="pedestrian", window_size=window_size, evaluation=eval_mode)
         else: 
             scale_factor_pedestrian = random.uniform(self.demand_scale_min, self.demand_scale_max)
             # scale_demand(self.pedestrian_input_trips, self.pedestrian_output_trips, scale_factor_pedestrian, demand_type="pedestrian")
-            scale_demand_sliced_window(self.pedestrian_input_trips, self.pedestrian_output_trips, scale_factor_pedestrian, demand_type="pedestrian", window_size=window_size, evaluation=eval_mode)
+            self.demand_windows['pedestrian'] = scale_demand_sliced_window(self.pedestrian_input_trips, self.pedestrian_output_trips, scale_factor_pedestrian, demand_type="pedestrian", window_size=window_size, evaluation=eval_mode)
 
 
         # Workers share read-only geometry; each keeps its own SUMO logs.
@@ -1447,9 +1462,11 @@ class ControlEnv(gym.Env):
                     "--error-log", f"{self.run_dir}/sumo_errorlog{self.traci_label}.txt",
                     "--step-length", str(self.step_length),
                     "--route-files", f"{self.vehicle_output_trips},{self.pedestrian_output_trips}"]
+        if self.sumo_seed is not None:
+            sumo_cmd.extend(["--seed", str(self.sumo_seed)])
         if self.auto_start:
             sumo_cmd.append("--start")
-        max_retries = 3
+        max_retries = 1 if self.signal_control_protocol == SHARED_SIGNAL_PROTOCOL else 3
         try:
             for attempt in range(max_retries):
                 try:

@@ -1,3 +1,4 @@
+import traceback
 import wandb
 import subprocess
 import sumo
@@ -93,6 +94,10 @@ class DesignEnv(gym.Env):
         self.lower_ppo = PPO(**self.lower_ppo_args)
 
         self.global_step = 0
+        self.executed_simulation_steps = 0
+        self.executed_total_steps = 0
+        self.execution_accounting_complete = True
+        self.rollout_execution = []
         self.action_timesteps = 0 # keep track of how many times action has been taken by all lower level workers
         self.lower_update_count = 0
         self.control_head_decisions = np.zeros(self.max_proposals, dtype=np.int64)
@@ -273,72 +278,101 @@ class DesignEnv(gym.Env):
 
         lower_queue = mp.Queue()
         lower_processes = []
-        for rank in range(self.control_args['lower_num_processes']):
-            worker_seed = self.control_args['global_seed'] + iteration * 1000 + rank
-            p = mp.Process(
-                target=parallel_train_worker,
-                args=(
-                    rank,
-                    self.run_dir,
-                    lower_old_policy,
-                    self.control_args,
-                    lower_queue,
-                    worker_seed,
-                    num_proposals,
-                    self.max_proposals,
-                    self.lower_state_normalizer,
-                    self.extreme_edge_dict,
-                    self.lower_ppo_args['device'],
-                    self.current_network_iteration,
-                    self.current_net_file_path,
-                    fixed_control,
-                    self.signal_slots)
-                )
-            p.start()
-            lower_processes.append(p)
-        
-        # lower_memories = Memory()
+        shared_control = self.control_args.get('signal_control_protocol') == 'shared_v1'
+        progress = [mp.Array('q', 5, lock=False) for _ in range(self.control_args['lower_num_processes'])] if shared_control else []
+        collected = {}
+        collection_error = None
         design_rewards_norm = []
         design_rewards_unnorm = [] # Unnormalized reward for logging.
         lower_rewards_norm = []
         lower_rewards_unnorm = []
-        for _ in lower_processes:
-            rank, memory, design_reward_unnorm, executed_decisions = lower_queue.get(timeout=120)
-            design_rewards_norm.append(self.higher_reward_normalizer.normalize([design_reward_unnorm]).item())
-            design_rewards_unnorm.append(design_reward_unnorm)
-            self.global_step += executed_decisions * self.control_args['lower_action_duration']
-            if memory is None:
-                continue
-            current_action_timesteps = len(memory.states)
-            print(f"Memory from worker {rank} received. Memory size: {current_action_timesteps}\n")
-            self.lower_memories.states.extend(torch.from_numpy(np.asarray(memory.states)))
-            actions = np.asarray(memory.actions)
-            self.lower_memories.actions.extend(torch.from_numpy(actions))
-            # Measured decisions containing each head, excluding fixed-control collection.
-            self.control_head_decisions += (actions[:, 1:] >= 0).sum(axis=0)
-            self.lower_memories.num_proposals.extend(torch.from_numpy(np.asarray(memory.num_proposals)))
-            self.lower_memories.values.extend(memory.values)
-            self.lower_memories.logprobs.extend(memory.logprobs)
-            self.lower_memories.is_terminals.extend(memory.is_terminals)
+        try:
+            for rank in range(self.control_args['lower_num_processes']):
+                worker_seed = self.control_args['global_seed'] + iteration * 1000 + rank
+                args = (rank, self.run_dir, lower_old_policy, self.control_args, lower_queue,
+                        worker_seed, num_proposals, self.max_proposals, self.lower_state_normalizer,
+                        self.extreme_edge_dict, self.lower_ppo_args['device'],
+                        self.current_network_iteration, self.current_net_file_path,
+                        fixed_control, self.signal_slots)
+                if shared_control:
+                    args += (progress[rank],)
+                p = mp.Process(target=parallel_train_worker, args=args)
+                p.start()
+                lower_processes.append(p)
 
-            lower_rewards_unnorm.extend(memory.rewards)
-            current_memory_norm = [self.lower_reward_normalizer.normalize([r]).item() for r in memory.rewards]
+            for _ in lower_processes:
+                packet = lower_queue.get(timeout=120)
+                if shared_control and isinstance(packet, dict):
+                    raise RuntimeError(f"Rollout worker failed: {packet}")
+                rank, memory, design_reward_unnorm, executed_decisions = packet
+                if shared_control:
+                    if rank in collected or progress[rank][3] != 1:
+                        raise RuntimeError(f"Worker {rank} returned without unique completed provenance.")
+                    if (progress[rank][1] != self.control_args['max_timesteps']
+                            or executed_decisions != self.control_args['total_action_timesteps_per_episode']):
+                        raise RuntimeError(f"Worker {rank} returned an incomplete episode.")
+                design_rewards_norm.append(self.higher_reward_normalizer.normalize([design_reward_unnorm]).item())
+                design_rewards_unnorm.append(design_reward_unnorm)
+                self.global_step += executed_decisions * self.control_args['lower_action_duration']
+                collected[rank] = executed_decisions
+                if memory is None:
+                    continue
+                current_action_timesteps = len(memory.states)
+                print(f"Memory from worker {rank} received. Memory size: {current_action_timesteps}\n")
+                self.lower_memories.states.extend(torch.from_numpy(np.asarray(memory.states)))
+                actions = np.asarray(memory.actions)
+                self.lower_memories.actions.extend(torch.from_numpy(actions))
+                # Measured decisions containing each head, excluding fixed-control collection.
+                self.control_head_decisions += (actions[:, 1:] >= 0).sum(axis=0)
+                self.lower_memories.num_proposals.extend(torch.from_numpy(np.asarray(memory.num_proposals)))
+                self.lower_memories.values.extend(memory.values)
+                self.lower_memories.logprobs.extend(memory.logprobs)
+                self.lower_memories.is_terminals.extend(memory.is_terminals)
 
-            # supply normalized rewards for gradient updates
-            lower_rewards_norm.extend(current_memory_norm)
-            self.lower_memories.rewards.extend(current_memory_norm)
+                lower_rewards_unnorm.extend(memory.rewards)
+                current_memory_norm = [self.lower_reward_normalizer.normalize([r]).item() for r in memory.rewards]
+                lower_rewards_norm.extend(current_memory_norm)
+                self.lower_memories.rewards.extend(current_memory_norm)
+                self.action_timesteps += current_action_timesteps
+                print(f"Action timesteps: {self.action_timesteps}, global step: {self.global_step}")
+                del memory
 
-            self.action_timesteps += current_action_timesteps
-            print(f"Action timesteps: {self.action_timesteps}, global step: {self.global_step}")
-            del memory #https://pytorch.org/docs/stable/multiprocessing.html
-
-        # TODO: Update the normalizer stats for all 3.
-
-
-        # Clean up. The join() method ensures that the main program waits for all processes to complete before continuing.
-        for p in lower_processes:
-            p.join()
-        # print(f"All processes joined\n\n")
+            # Never update while a rollout process is still alive.
+            for p in lower_processes:
+                if shared_control:
+                    p.join(timeout=5)
+                    if p.is_alive() or p.exitcode != 0:
+                        raise RuntimeError("Rollout worker did not exit successfully after publishing its episode.")
+                else:
+                    p.join()
+        except BaseException:
+            collection_error = traceback.format_exc()
+            raise
+        finally:
+            if collection_error is not None:
+                for p in lower_processes:
+                    if p.is_alive():
+                        p.terminate()
+                for p in lower_processes:
+                    p.join(timeout=5)
+                    if p.is_alive():
+                        p.kill()
+                        p.join()
+            if shared_control:
+                workers = [dict(rank=rank, worker_seed=self.control_args['global_seed'] + iteration * 1000 + rank,
+                                confirmed_total_steps=counts[0], measured_steps=counts[1],
+                                executed_decisions=counts[2], finalized=counts[3],
+                                simulator_call_unresolved=bool(counts[4]),
+                                collected_decisions=collected.get(rank, 0),
+                                exitcode=lower_processes[rank].exitcode if rank < len(lower_processes) else None)
+                           for rank, counts in enumerate(progress)]
+                self.rollout_execution.append(dict(round=iteration, status='failed' if collection_error else 'complete',
+                                                   error=collection_error, workers=workers))
+                self.executed_simulation_steps += sum(row['measured_steps'] for row in workers)
+                self.executed_total_steps += sum(row['confirmed_total_steps'] for row in workers)
+                self.execution_accounting_complete &= all(not row['simulator_call_unresolved'] for row in workers)
+                lower_queue.close()
+                lower_queue.join_thread()
 
         # Keep shared policy weights fixed until every worker has finished.
         if not fixed_control and self.action_timesteps >= self.control_args['lower_update_freq']:
