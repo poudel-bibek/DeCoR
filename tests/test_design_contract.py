@@ -171,6 +171,22 @@ class CheckpointReadoutTests(unittest.TestCase):
                     load_policy(self.higher, self.lower, self.normalizer, self.path)
                 torch.testing.assert_close(self.predictions(), expected, rtol=0, atol=0)
 
+    def test_executor_mismatch_rejects_before_policy_or_normalizer_mutation(self):
+        expected = self.predictions()
+        checkpoint = torch.load(self.path)
+        for section in ("higher", "lower"):
+            for parameter in checkpoint[section]["state_dict"].values():
+                parameter.add_(0.5)
+        checkpoint["lower"]["state_normalizer_mean"].fill(9)
+        for saved, requested in (("shared_v1", None), (None, "shared_v1")):
+            checkpoint["lower"]["provenance"]["signal_control_protocol"] = saved
+            torch.save(checkpoint, self.path)
+            with self.subTest(saved=saved, requested=requested):
+                options = {} if requested is None else {"signal_control_protocol": requested}
+                with self.assertRaises(ValueError):
+                    load_policy(self.higher, self.lower, self.normalizer, self.path, **options)
+                torch.testing.assert_close(self.predictions(), expected, rtol=0, atol=0)
+
 
 class OneShotDesignTests(unittest.TestCase):
     def test_configured_design_gamma_returns_immediate_reward_only(self):
@@ -253,6 +269,7 @@ class IntersectionPriorityTests(unittest.TestCase):
                  if c.getTLSID() == signal]
         states = [p.get("state") for p in ET.parse(path).getroot().find(f"tlLogic[@id='{signal}']")]
         env = ControlEnv.__new__(ControlEnv)
+        env.signal_control_protocol = None
         env.tl_ids = [signal]
         env.int_tl_phase_groups, env.int_crosswalk_phase_groups = get_intersection_phase_groups()
         with patch("simulation.control_env.traci.trafficlight.setRedYellowGreenState",

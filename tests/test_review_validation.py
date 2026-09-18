@@ -653,7 +653,7 @@ class JourneyCohortTest(unittest.TestCase):
         with patch.object(review, 'traci') as traci:
             traci.simulation.getTime.return_value = 600
             for name in ('getDepartedIDList', 'getArrivedIDList', 'getDepartedPersonIDList',
-                         'getArrivedPersonIDList', 'getStartingTeleportIDList', 'getCollidingVehiclesIDList'):
+                         'getArrivedPersonIDList', 'getStartingTeleportIDList', 'getCollisions'):
                 getattr(traci.simulation, name).return_value = []
             traci.vehicle.getIDList.return_value = []
             traci.person.getIDList.return_value = ['p']
@@ -699,6 +699,30 @@ class FeedbackComparisonTest(unittest.TestCase):
                                               "time_loss_plus_insertion_delay_mean_s": vehicle}},
                       "teleports": [{"id": "teleported"}] if teleport else [], "collisions": []}}}
         review.save(Path(job["directory"]) / "result.json", result)
+
+    def test_person_overlap_is_reported_without_vetoing_journey_performance(self):
+        job = review.feedback_jobs(self.folder, "selection")[0]
+        result = json.loads((Path(job["directory"]) / "result.json").read_text())
+        cohort = result["journeys"]["cohort"]
+        baseline = review.feedback_scores(result)
+        cohort.update(simulation_end_s=700, drain_s=150)
+        log = self.folder / "sumo_errorlog_0.txt"
+        ordinary_warnings = (
+            "Warning: Person 'waiting' is jammed on walkingarea, time=600.00.\n"
+            "Warning: Pedestrian width may cause collisions with vehicles.\n")
+        log.write_text(ordinary_warnings)
+        cohort["collisions"] = review._person_collision_events(log)
+        self.assertEqual(review.feedback_scores(result), baseline)
+
+        log.write_text(ordinary_warnings +
+                       "Warning: Collision of person '1471_1' and person '2055_1', "
+                       "lane='crossing', time=667.00.\n")
+        cohort["collisions"] = review._person_collision_events(log)
+        self.assertEqual(len(cohort["collisions"]), 1)
+        self.assertEqual(review.feedback_scores(result), baseline)
+        cohort["collisions"].append({"time": 680, "collider": "vehicle",
+                                     "victim": "pedestrian", "type": "vehicle-person"})
+        self.assertIsNone(review.feedback_scores(result))
 
     def test_selection_uses_complete_cohorts_and_all_three_information_scores(self):
         selected = review.select_feedback(self.folder, {})
@@ -844,7 +868,7 @@ class FeedbackComparisonTest(unittest.TestCase):
         with path.open("w") as trace, patch.object(review, "traci") as traci:
             tracker.mechanism_file = trace
             for name in ("getDepartedIDList", "getArrivedIDList", "getDepartedPersonIDList",
-                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollidingVehiclesIDList"):
+                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollisions"):
                 getattr(traci.simulation, name).return_value = []
             traci.person.getIDList.return_value = []
             traci.vehicle.getWaitingTime.return_value = 0
@@ -869,7 +893,7 @@ class FeedbackComparisonTest(unittest.TestCase):
         tracker.feedback = True
         with patch.object(review, "traci") as traci:
             for name in ("getDepartedIDList", "getArrivedIDList", "getDepartedPersonIDList",
-                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollidingVehiclesIDList"):
+                         "getArrivedPersonIDList", "getStartingTeleportIDList", "getCollisions"):
                 getattr(traci.simulation, name).return_value = []
             traci.vehicle.getIDList.return_value = []
             traci.person.getIDList.return_value = ["p"]
@@ -883,6 +907,50 @@ class FeedbackComparisonTest(unittest.TestCase):
                 tracker.step()
         self.assertEqual(tracker.approach_wait["p"], 3)
         self.assertEqual(tracker.wait["pedestrian"], 1)
+
+
+class CatalogueLifecycleTest(unittest.TestCase):
+    def test_calibration_survives_progress_but_rejects_changed_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            network = folder / "network.xml"
+            network.write_text("<net/>")
+            protocol = {
+                "randomness": {"calibration_seeds": [710100], "diagnostic_seeds": [810100]},
+                "classical": {"grid": {
+                    "cycle_s": [60], "intersection_action_order": [0, 1, 2, 3],
+                    "intersection_action_ticks": {"60": [[2, 2, 1, 1]]},
+                    "midblock_vehicle_fraction": [.5], "progression_direction": ["eastbound", "westbound"]}}}
+            review.save(folder / "protocol.json", protocol)
+            review.save(folder / "catalogue.json", {"fixture": "geometry-only"})
+            study = dict(kind="catalogue", status="prepared", settings={"smoke": True}, seeds=[],
+                         source_hashes={}, protocol=protocol,
+                         configuration=dict(design_args={}, control_args={"signal_control_protocol": "shared_v1"},
+                                            higher_ppo_args={}, lower_ppo_args={}),
+                         layouts={"two": {"network": str(network), "sha256": review.digest(network)}},
+                         protocol_sha256=review.digest(folder / "protocol.json"),
+                         catalogue_sha256=review.digest(folder / "catalogue.json"))
+            review.save(folder / "preparation.json", study)
+            study["preparation_sha256"] = review.digest(folder / "preparation.json")
+            review.save(folder / "study.json", study)
+            calibration = review.catalogue_jobs(folder, "calibration")
+            chosen = calibration[0]["parameters"]
+            review.save(folder / "catalogue_calibration.json",
+                        dict(preparation_sha256=study["preparation_sha256"],
+                             selected={"two": {"parameters": chosen}}))
+            with self.assertRaisesRegex(ValueError, "every declared training job"):
+                review.catalogue_jobs(folder, "diagnostic")
+            study.update(status="complete", initial_controller_sha256={"510100": "initialization"})
+            review.save(folder / "study.json", study)
+            diagnostics = review.catalogue_jobs(folder, "diagnostic")
+            self.assertEqual({job["arm"] for job in diagnostics}, {"local_actuated", "coordinated_schedule"})
+            self.assertEqual(next(job["parameters"] for job in diagnostics if "parameters" in job), chosen)
+            self.assertEqual({job["seed"] for job in diagnostics}, {810100})
+            self.assertTrue(all(job["split"] == "diagnostic" for job in diagnostics))
+            study["configuration"]["control_args"]["signal_control_protocol"] = None
+            review.save(folder / "study.json", study)
+            with self.assertRaisesRegex(ValueError, "immutable preparation"):
+                review.catalogue_jobs(folder, "diagnostic")
 
 
 if __name__ == '__main__':

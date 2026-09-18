@@ -1,6 +1,12 @@
+import hashlib
+import json
+from pathlib import Path
 import random
+import time
+import traceback
 import numpy as np
 import torch
+import traci
 from ppo.ppo_utils import Memory
 from simulation.control_env import ControlEnv
 
@@ -18,7 +24,8 @@ def parallel_train_worker(rank,
                          network_iteration,
                          current_net_file_path,
                          fixed_control=False,
-                         signal_slots=None):
+                         signal_slots=None,
+                         progress=None):
     """
     At every iteration, a number of workers will each parallelly carry out one episode in control environment.
     - Worker environment runs in CPU (SUMO runs in CPU).
@@ -36,14 +43,48 @@ def parallel_train_worker(rank,
     np.random.seed(worker_seed)
     torch.manual_seed(worker_seed)
 
-    worker_env = ControlEnv(control_args, run_dir, worker_id=rank, network_iteration=network_iteration, current_net_file_path=current_net_file_path)
+    control_args = control_args.copy()
+    shared_control = control_args.get('signal_control_protocol') == 'shared_v1'
+    if shared_control:
+        control_args['sumo_seed'] = int(worker_seed)
+    worker_env = None
     local_memory = None if fixed_control else Memory()
+    executed_decisions = 0
+    error = None
+    warmup_s = total_s = None
+    started = time.monotonic()
+    log_paths = {}
+    # One writer per shared row: total steps, measured steps, returned decisions,
+    # finalization (0 pending, 1 complete, -1 failed), unresolved simulator call.
+    progress = progress if progress is not None else [0, 0, 0, 0, 0]
+    measuring = False
+    original_step = traci.simulationStep
+
+    def counted_step(*args, **kwargs):
+        progress[4] = 1
+        result = original_step(*args, **kwargs)
+        progress[0] += 1
+        if measuring:
+            progress[1] += 1
+        progress[4] = 0
+        return result
 
     try:
+        if shared_control:
+            traci.simulationStep = counted_step
+        worker_env = ControlEnv(control_args, run_dir, worker_id=rank, network_iteration=network_iteration, current_net_file_path=current_net_file_path)
+        if shared_control:
+            log_paths = {kind: Path(run_dir) / f'{prefix}{worker_env.traci_label}.txt'
+                         for kind, prefix in (('log', 'sumo_logfile'), ('error_log', 'sumo_errorlog'))}
+            # Earlier successful episodes already own their full log text in JSONL.
+            for path in log_paths.values():
+                path.write_text('')
         state, _ = worker_env.reset(extreme_edge_dict, num_proposals, tl=fixed_control, eval_mode=False,
                                     signal_slots=signal_slots)
+        if shared_control:
+            warmup_s = traci.simulation.getTime()
+            measuring = True
         ep_reward = 0
-        executed_decisions = 0
 
         for _ in range(control_args['total_action_timesteps_per_episode']):
             if fixed_control:
@@ -77,6 +118,8 @@ def parallel_train_worker(rank,
 
             ep_reward += control_reward_unnorm
             executed_decisions += 1
+            if shared_control:
+                progress[2] = executed_decisions
             state = next_state
             if done or truncated:
                 break
@@ -87,13 +130,69 @@ def parallel_train_worker(rank,
 
         # In PPO, we do not make use of the total reward. We only use the rewards collected in the memory.
         print(f"Worker {rank} finished. Control Episode Reward: {round(ep_reward, 2)}. Design Reward (Unnormalized): {round(design_reward_unnorm, 2)}.")
-        train_queue.put((rank, local_memory, design_reward_unnorm, executed_decisions))
+        if not shared_control:
+            train_queue.put((rank, local_memory, design_reward_unnorm, executed_decisions))
 
+    except BaseException:
+        error = traceback.format_exc()
+        raise
     finally:
-        if 'worker_env' in locals() and worker_env is not None:
-            worker_env.close()
+        if shared_control:
+            traci.simulationStep = original_step
+        close_error = None
+        if worker_env is not None:
+            try:
+                if shared_control and worker_env.sumo_running:
+                    traci.switch(worker_env.traci_label)
+                    try:
+                        total_s = traci.simulation.getTime()
+                    except (traci.TraCIException, traci.FatalTraCIError):
+                        pass  # The primary error and simulator logs are retained below.
+                    traci.close(wait=True)
+                    worker_env.sumo_running = False
+                else:
+                    worker_env.close()
+            except BaseException:
+                if not shared_control:
+                    raise
+                close_error = traceback.format_exc()
+        if shared_control:
+            try:
+                logs = {kind: dict(path=str(path), text=path.read_text(errors='replace') if path.exists() else None)
+                        for kind, path in log_paths.items()}
+                episode = dict(worker_seed=int(worker_seed), sumo_seed=control_args['sumo_seed'], rank=rank,
+                               round=(worker_seed - control_args['global_seed'] - rank) // 1000,
+                               signal_control_protocol='shared_v1', network_iteration=network_iteration,
+                               network=str(current_net_file_path),
+                               network_sha256=hashlib.sha256(Path(current_net_file_path).read_bytes()).hexdigest(),
+                               signal_slots=signal_slots, status='failed' if error or close_error else 'complete',
+                               error=error, close_error=close_error,
+                               executed_decisions=executed_decisions, measured_steps=progress[1],
+                               confirmed_total_steps=progress[0], simulator_call_unresolved=bool(progress[4]),
+                               warmup_s=warmup_s, total_simulation_s=total_s,
+                               demand_windows=worker_env.demand_windows if worker_env is not None else {},
+                               signal_executor_stats_scope='warmup_and_measurement',
+                               signal_executor_stats=(worker_env.signal_executor.stats
+                                                      if worker_env is not None and worker_env.signal_executor is not None else {}),
+                               sumo_logs=logs, elapsed_s=time.monotonic() - started)
+                with (Path(run_dir) / f'worker_{rank}_episodes.jsonl').open('a') as output:
+                    output.write(json.dumps(episode, allow_nan=False) + '\n')
+                progress[3] = -1 if error or close_error else 1
+            except BaseException:
+                progress[3] = -1
+                train_queue.put(dict(rank=rank, status='failed', error=error,
+                                     close_error=close_error, provenance_error=traceback.format_exc()))
+                raise
+            if error or close_error:
+                train_queue.put(dict(rank=rank, status='failed', error=error, close_error=close_error))
+        if worker_env is not None:
             del worker_env
             print(f"Worker {rank} environment closed.")
+        if close_error is not None and error is None:
+            raise RuntimeError(close_error)
+    if shared_control:
+        # Publish success only after durable episode provenance and flushed SUMO logs.
+        train_queue.put((rank, local_memory, design_reward_unnorm, executed_decisions))
 
 def parallel_eval_worker(rank, 
                          eval_worker_config, 
