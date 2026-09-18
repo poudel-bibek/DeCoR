@@ -75,7 +75,7 @@ class CompactLoggingTests(unittest.TestCase):
         self.training_path = self.directory / "7" / "layout" / "training.json"
         self.write(self.directory / "study.json", self.study)
         self.publish_training()
-        self.state = self.directory / ".wandb_sync" / "v2" / "online" / "destination"
+        self.state = self.directory / ".wandb_sync" / f"v{sync.SCHEMA_VERSION}" / "online" / "destination"
         self.state.mkdir(parents=True)
         self.remote = MemoryRemote()
         self.args = SimpleNamespace(mode="online", entity="private_owner", project="existing_project")
@@ -159,15 +159,36 @@ class CompactLoggingTests(unittest.TestCase):
         self.add_round(3, update=1, loss=loss)  # A carried-forward info dict is not another update.
         self.record["gates"] = [dict(round=2, update=1, gradient_norms_after_clipping=[0.3, 0.7, 0.2])]
         events = sync.training_events(self.record)
-        self.assertEqual([event["training/round"] for event in events if "ppo/update" in event], [2])
-        self.assertEqual(events[2]["training/controller_reward_unnormalized"], -9)
-        self.assertEqual(events[2]["training/controller_reward_normalized"], -0.4)
-        self.assertEqual(events[2]["ppo/gradient_norm_after_clipping_max"], 0.7)
-        self.assertEqual(events[2]["ppo/entropy"], 0.8)
-        self.assertNotIn("ppo/actor_grad_norm", events[2])
-        self.assertFalse(any("reward" in key or key.startswith("ppo/") for key in events[3]))
+        self.assertEqual([event["control/round"] for event in events if "control/update" in event], [2])
+        self.assertEqual(events[2]["control/reward_unnormalized"], -9)
+        self.assertEqual(events[2]["control/reward_normalized"], -0.4)
+        self.assertEqual(events[2]["control/gradient_norm_after_clipping_max"], 0.7)
+        self.assertEqual(events[2]["control/entropy"], 0.8)
+        self.assertNotIn("control/actor_grad_norm", events[2])
+        self.assertEqual({key for key in events[3] if key.startswith("control/")},
+                         {"control/round", "control/measured_steps"})
         self.assertNotIn("ignored_numeric_detail", json.dumps(events))
         self.assertNotIn("design_reward", json.dumps(events))
+
+    def test_fixed_layout_never_reports_design_learning(self):
+        loss = dict(lower_avg_reward_unnorm=-9, lower_avg_reward_norm=-0.4,
+                    lower_policy_loss=0.2, lower_value_loss=3, lower_entropy_loss=0.8)
+        self.add_round(1, update=1, loss=loss)
+        self.record.update(status="complete", complete=True)
+        self.publish_training()
+        self.write(self.training_path.with_name("result.json"),
+                   dict(status="complete", seed=7, layout_id="layout"))
+        history = self.synchronize()
+        self.assertEqual(len(self.remote.histories), 1)
+        self.assertTrue(history[0]["control/active"])
+        self.assertFalse(history[0]["design/active"])
+        self.assertEqual(history[0]["design/status"], "inactive")
+        for name in ("round", "update", "reward_unnormalized", "policy_loss", "complete", "failed"):
+            self.assertIsNone(history[0][f"design/{name}"])
+        self.assertIsNone(history[0]["control/reward_unnormalized"])
+        self.assertEqual(history[1]["control/reward_unnormalized"], -9)
+        self.assertTrue(history[-1]["control/complete"])
+        self.assertFalse(any(key.startswith("design/") for row in history[1:] for key in row))
 
 
     def test_failed_ppo_keeps_nonfinite_metrics_null_without_inventing_rewards(self):
@@ -175,12 +196,12 @@ class CompactLoggingTests(unittest.TestCase):
         self.record["gates"] = [dict(round=1, update=1, status="failed", after={"exact_kl": "inf"},
                                      losses={"policy_loss": "nan"}, gradient_norms_after_clipping=["nan"])]
         event = sync.training_events(self.record)[1]
-        self.assertTrue(event["training/failed"])
-        self.assertIsNone(event["ppo/exact_kl"])
-        self.assertIsNone(event["ppo/policy_loss"])
-        self.assertIsNone(event["ppo/gradient_norm_after_clipping_max"])
-        self.assertNotIn("training/controller_reward_unnormalized", event)
-        self.assertNotIn("ppo/learning_rate", event)
+        self.assertTrue(event["control/failed"])
+        self.assertIsNone(event["control/exact_kl"])
+        self.assertIsNone(event["control/policy_loss"])
+        self.assertIsNone(event["control/gradient_norm_after_clipping_max"])
+        self.assertNotIn("control/reward_unnormalized", event)
+        self.assertNotIn("control/learning_rate", event)
 
     def test_checkpoint_waits_for_exact_complete_matrix(self):
         results = [self.diagnostic(0, scale, seed, cost=cost)
@@ -292,12 +313,12 @@ class CompactLoggingTests(unittest.TestCase):
         self.assertEqual(history[:len(first)], first)
         self.assertEqual(history[:len(before_evaluation)], before_evaluation)
         self.assertEqual(history[:len(after_evaluation)], after_evaluation)
-        self.assertEqual([row["sync/event_id"] for row in history], [
-            "v2:initial", "v2:training/1", "v2:training/2", "v2:eval/0",
-            "v2:training/3", "v2:terminal", "v2:eval/2",
+        self.assertEqual([row["sync/event_id"].split(":", 1)[1] for row in history], [
+            "initial", "training/1", "training/2", "eval/0",
+            "training/3", "terminal", "eval/2",
         ])
-        self.assertTrue(history[-2]["training/complete"])
-        self.assertNotIn("training/round", history[-1])
+        self.assertTrue(history[-2]["control/complete"])
+        self.assertNotIn("control/round", history[-1])
         self.assertEqual(history[-1]["eval/checkpoint_round"], 2)
         self.assertEqual([row["_step"] for row in history], list(range(len(history))))
 
@@ -351,10 +372,14 @@ class CompactLoggingTests(unittest.TestCase):
                    dict(status="failed", seed=7, layout_id="layout", error="private traceback detail"))
         history = self.synchronize()
         self.assertEqual(len(self.remote.histories), 1)
-        self.assertEqual([row["sync/event_id"] for row in history], ["v2:terminal"])
-        self.assertTrue(history[0]["training/failed"])
-        self.assertFalse(history[0]["training/complete"])
-        self.assertIsNone(history[0]["training/measured_steps"])
+        self.assertEqual([row["sync/event_id"].split(":", 1)[1] for row in history], ["terminal"])
+        self.assertTrue(history[0]["control/failed"])
+        self.assertFalse(history[0]["control/complete"])
+        self.assertIsNone(history[0]["control/measured_steps"])
+        self.assertEqual(history[0]["design/status"], "inactive")
+        self.assertFalse(history[0]["design/active"])
+        self.assertIsNone(history[0]["design/complete"])
+        self.assertIsNone(history[0]["control/reward_unnormalized"])
         self.assertNotIn("private traceback detail", json.dumps(history))
 
 

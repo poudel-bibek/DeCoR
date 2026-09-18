@@ -5,7 +5,10 @@ Run with: uv run --no-project --with wandb==0.30.0 python wandb_sync.py STUDY --
 Add --mode online only for an authorized private upload; --follow polls until Ctrl-C.
 Local JSON/checkpoints remain authoritative. No checkpoint or source files are uploaded.
 
-Schema v2 uses one run per (study, layout, learner seed), never per diagnostic trial.
+Schema v3 uses one run per (study, layout, learner seed), never per agent or trial.
+Both agents have explicit control/ and design/ sections; eval/ describes joint outcomes.
+The catalogue trains only control. Design is inactive, with null metrics rather than
+invented zero rewards, updates or completion. Both sections are initialized once.
 Only METRIC_AXES metrics and sync/event identity/hash bookkeeping are transmitted.
 Controller rewards are the means for the round that triggered an actual update,
 not the entire multi-round PPO buffer. Evaluation is the existing greedy diagnostic
@@ -17,10 +20,10 @@ completion fractions pool native completed/scheduled counts, not per-cell fracti
 Missing failed-cell counters make pooled fractions and incident totals null, not zero.
 The effective smoke grid follows catalogue_jobs. Classical/calibration trials stay local.
 
-The fsynced ledger under .wandb_sync/v2/ledgers is logically append-only: an atomic
+The fsynced ledger under .wandb_sync/v3/ledgers is logically append-only: an atomic
 snapshot adds new event IDs without rewriting their order, payload or source hash.
 Late evaluation can therefore follow later training without changing logged prefixes.
-Offline acceptance means a finished, fsynced W&B segment under .wandb_sync/v2/offline.
+Offline acceptance means a finished, fsynced W&B segment under .wandb_sync/v3/offline.
 Segments have disjoint explicit steps; interrupted staging directories are uncommitted.
 To publish later, rerun this CLI online against the original JSON, not `wandb sync`
 over the segment/staging tree. Online and offline cursors are deliberately independent.
@@ -42,7 +45,7 @@ import time
 
 
 SDK_VERSION = "0.30.0"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PPO_FIELDS = {
     "policy_loss": "lower_policy_loss",
     "value_loss": "lower_value_loss",
@@ -53,20 +56,20 @@ PPO_FIELDS = {
     "clip_fraction": "lower_clip_fraction",
 }
 OPTIONAL_PPO_FIELDS = ("actor_grad_norm", "critic_grad_norm", "actor_update_norm", "entropy_fraction")
-METRIC_AXES = {
-    "training/round": (
-        "training/measured_steps", "training/controller_reward_unnormalized",
-        "training/controller_reward_normalized", "training/status", "training/complete", "training/failed",
-    ),
-    "ppo/update": tuple("ppo/" + field for field in PPO_FIELDS) + (
-        "ppo/gradient_norm_after_clipping_max",
-    ) + tuple("ppo/" + field for field in OPTIONAL_PPO_FIELDS),
-    "eval/checkpoint_round": (
-        "eval/eligible_blocks", "eval/total_blocks", "eval/failed_blocks",
-        "eval/teleports", "eval/collisions", "eval/pedestrian_completion_fraction",
-        "eval/vehicle_completion_fraction", "eval/primary_journey_mean_s",
-    ),
+AGENT_METRICS = {
+    "round": ("measured_steps", "reward_unnormalized", "reward_normalized",
+              "active", "status", "complete", "failed"),
+    "update": tuple(PPO_FIELDS) + ("gradient_norm_after_clipping_max",) + OPTIONAL_PPO_FIELDS,
 }
+METRIC_AXES = {
+    f"{agent}/{axis}": tuple(f"{agent}/{field}" for field in fields)
+    for agent in ("design", "control") for axis, fields in AGENT_METRICS.items()
+}
+METRIC_AXES["eval/checkpoint_round"] = (
+    "eval/eligible_blocks", "eval/total_blocks", "eval/failed_blocks",
+    "eval/teleports", "eval/collisions", "eval/pedestrian_completion_fraction",
+    "eval/vehicle_completion_fraction", "eval/primary_journey_mean_s",
+)
 IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -146,43 +149,43 @@ def training_events(record):
     gates = by_round(record.get("gates", []))
     initial = selected(record, ("initial_controller_sha256", "initial_design_sha256"))
     events = [event("initial", [initial, checkpoints.get(0)], {
-        "training/round": 0, "training/measured_steps": 0,
-        "training/status": "running", "training/complete": False, "training/failed": False,
+        "control/round": 0, "control/measured_steps": 0,
+        "control/status": "running", "control/complete": False, "control/failed": False,
     })]
     previous_update = 0
     for row in record["rounds"]:
         iteration = row["iteration"]
         gate = gates.get(iteration, {})
-        values = {"training/round": iteration, "training/measured_steps": row["simulation_steps"]}
+        values = {"control/round": iteration, "control/measured_steps": row["simulation_steps"]}
         if row.get("status") == "failed":
-            values["training/failed"] = True
+            values["control/failed"] = True
         update = row.get("control_updates", previous_update)
         loss = row.get("control_loss")
         if update > previous_update:
             if loss is not None:
                 values.update({
-                    "training/controller_reward_unnormalized": metric(loss["lower_avg_reward_unnorm"]),
-                    "training/controller_reward_normalized": metric(loss["lower_avg_reward_norm"]),
+                    "control/reward_unnormalized": metric(loss["lower_avg_reward_unnorm"]),
+                    "control/reward_normalized": metric(loss["lower_avg_reward_norm"]),
                 })
             if loss is not None or gate:
-                values["ppo/update"] = update
+                values["control/update"] = update
                 for name, field in PPO_FIELDS.items():
                     if loss is not None and field in loss:
-                        values["ppo/" + name] = metric(loss[field])
+                        values["control/" + name] = metric(loss[field])
                     else:
                         source_field = field.removeprefix("lower_")
                         diagnostics = gate.get("after", {})
                         losses = gate.get("losses", {})
                         if source_field in losses:
-                            values["ppo/" + name] = metric(losses[source_field])
+                            values["control/" + name] = metric(losses[source_field])
                         elif source_field in diagnostics:
-                            values["ppo/" + name] = metric(diagnostics[source_field])
+                            values["control/" + name] = metric(diagnostics[source_field])
                 for name in OPTIONAL_PPO_FIELDS:
                     if name in gate.get("losses", {}):
-                        values["ppo/" + name] = metric(gate["losses"][name])
+                        values["control/" + name] = metric(gate["losses"][name])
                 norms = [metric(value) for value in gate.get("gradient_norms_after_clipping", [])]
                 if norms:
-                    values["ppo/gradient_norm_after_clipping_max"] = (
+                    values["control/gradient_norm_after_clipping_max"] = (
                         max(norms) if all(value is not None for value in norms) else None)
         previous_update = update
         events.append(event(f"training/{iteration}", [row, gate, checkpoints.get(iteration)], values))
@@ -335,12 +338,20 @@ def records(directory, study):
                         or status["status"] not in ("complete", "failed", "stopped")):
                     raise ValueError("Terminal status belongs to a different learner or is not terminal")
                 last = record["rounds"][-1] if record is not None and record["rounds"] else {}
-                values = {"training/round": last.get("iteration", 0),
-                          "training/measured_steps": last.get("simulation_steps"),
-                          "training/status": status["status"], "training/complete": status["status"] == "complete",
-                          "training/failed": status["status"] == "failed"}
+                values = {"control/round": last.get("iteration", 0),
+                          "control/measured_steps": last.get("simulation_steps"),
+                          "control/status": status["status"], "control/complete": status["status"] == "complete",
+                          "control/failed": status["status"] == "failed"}
                 events.append(event("terminal", [status, values], values))
             events.extend(evaluation_events(directory, study, record, identity, report))
+            if events:
+                empty_agents = {
+                    f"{agent}/{name}": None
+                    for agent in ("design", "control")
+                    for axis, fields in AGENT_METRICS.items() for name in (axis, *fields)
+                }
+                events[0] = {**empty_agents, **events[0], "design/active": False,
+                             "design/status": "inactive", "control/active": True}
             yield path, record, identity, events
 
 
@@ -444,7 +455,11 @@ def sync_record(wandb, api, args, directory, study, state, path, record, identit
     configuration = {
         "study": directory.name, **identity, "kind": "catalogue", "metric_schema_version": SCHEMA_VERSION,
         "study_type": study["protocol"].get("study_type", "catalogue_pilot"),
-        "learning_rate": (record_configuration or {}).get("lower_ppo_args", {}).get("lr"),
+        "agents": {
+            "design": {"active": False, "reason": "fixed_catalogue_layout"},
+            "control": {"active": True,
+                        "learning_rate": (record_configuration or {}).get("lower_ppo_args", {}).get("lr")},
+        },
         "training_action_selection": "sampled", "evaluation_action_selection": "greedy",
         "evaluation_split": "diagnostic", "evaluation_scope": "development only; not held-out selection",
         "reward_semantics": "controller reward mean for update-triggering round; not full-cohort journey cost",
@@ -457,7 +472,7 @@ def sync_record(wandb, api, args, directory, study, state, path, record, identit
         private_project(api, args.entity, args.project)
     staging = Path(tempfile.mkdtemp(prefix="pending-", dir=root))
     run = wandb.init(entity=args.entity, project=args.project, group=directory.name,
-                     id=run_id, name=f"{identity['layout']}/learner_{identity['seed']}", job_type="learner",
+                     id=run_id, name=f"{identity['layout']}/control_{identity['seed']}", job_type="control",
                      config=configuration, dir=str(staging), mode=args.mode,
                      resume="allow" if api is not None else None)
     if run is None or run.offline != (args.mode == "offline"):
